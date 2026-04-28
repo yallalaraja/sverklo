@@ -47,6 +47,32 @@ function readFileMaybe(path: string): { exists: boolean; content: string; path: 
   return { exists: true, content: readFileSync(path, "utf-8"), path };
 }
 
+/**
+ * Finding 6: case-insensitive lookup for instruction files in the
+ * project root. Linux is case-sensitive, so a user with `Agents.md`
+ * (Codex's lowercase convention) wouldn't match `existsSync("AGENTS.md")`.
+ * On macOS/Windows the underlying FS is case-insensitive but we still
+ * want to report the user's actual filename so messages match what
+ * they see in their editor.
+ */
+export function findInstructionFile(
+  projectPath: string,
+  baseName: string
+): { exists: boolean; content: string; path: string } {
+  try {
+    const target = baseName.toLowerCase();
+    for (const entry of readdirSync(projectPath)) {
+      if (entry.toLowerCase() === target) {
+        const fullPath = join(projectPath, entry);
+        return { exists: true, content: readFileSync(fullPath, "utf-8"), path: fullPath };
+      }
+    }
+  } catch {
+    // Unreadable directory — fall through to false
+  }
+  return { exists: false, content: "", path: join(projectPath, baseName) };
+}
+
 export interface AgentsFileInputs {
   projectPath: string;
   claudeMd: { exists: boolean; content: string; path: string };
@@ -60,37 +86,63 @@ export type AgentsFileAction =
   | { action: "create-claude-md"; fileName: "CLAUDE.md"; path: string };
 
 /**
+ * Secondary sentinel for Finding 7: detects the snippet's heading even
+ * when the user hand-edited the body and removed the literal
+ * "sverklo_search" sentinel. Without this, re-running `sverklo init`
+ * would re-append the entire 30+ line snippet on top of the existing
+ * (modified) one.
+ */
+const HEADING_SENTINEL_RE = /^##\s+Sverklo\b/m;
+
+function snippetAlreadyPresent(content: string, sentinel: string): boolean {
+  if (content.includes(sentinel)) return true;
+  if (HEADING_SENTINEL_RE.test(content)) return true;
+  return false;
+}
+
+/**
  * Decide which agent-instructions file to write the prefer-sverklo
  * snippet into. Issue #19 (RuslanZavacky): respect AGENTS.md when it
  * exists, especially when CLAUDE.md is a redirect-only file.
  *
  * Rules (in order):
- *   1. If either file already contains the sentinel, skip — idempotent.
- *   2. If AGENTS.md exists, append to it. AGENTS.md is the universal
- *      convention (Codex, OpenCode, Cursor, Claude Code all read it),
- *      so writing there reaches every agent. Note in the message if
- *      CLAUDE.md is a redirect-only stub so the user understands why
- *      we left it alone.
+ *   1. If either file already contains the snippet (literal sentinel
+ *      OR `## Sverklo` heading), skip — idempotent.
+ *   2. AGENTS.md is preferred IF it has real content, OR CLAUDE.md
+ *      is missing/empty. An empty placeholder AGENTS.md (Finding 12)
+ *      shouldn't beat a populated CLAUDE.md.
  *   3. Else if CLAUDE.md exists, append to it.
  *   4. Else create CLAUDE.md (don't auto-create AGENTS.md — too
- *      opinionated; we only modify files the user has already opted
- *      into by creating).
+ *      opinionated; we only modify files the user has opted into).
  */
 export function resolveAgentsFileTarget(inputs: AgentsFileInputs): AgentsFileAction {
   const { claudeMd, agentsMd, sentinel } = inputs;
-  if (agentsMd.exists && agentsMd.content.includes(sentinel)) {
+
+  // Finding 7: also check for the heading sentinel.
+  if (agentsMd.exists && snippetAlreadyPresent(agentsMd.content, sentinel)) {
     return { action: "skip", fileName: "AGENTS.md", path: agentsMd.path };
   }
-  if (claudeMd.exists && claudeMd.content.includes(sentinel)) {
+  if (claudeMd.exists && snippetAlreadyPresent(claudeMd.content, sentinel)) {
     return { action: "skip", fileName: "CLAUDE.md", path: claudeMd.path };
   }
-  if (agentsMd.exists) {
-    const note =
-      claudeMd.exists && /agents\.md/i.test(claudeMd.content)
-        ? "CLAUDE.md left alone — already delegates to AGENTS.md"
-        : claudeMd.exists
-          ? "CLAUDE.md left alone — AGENTS.md is the canonical location"
-          : undefined;
+
+  // Finding 12: an existing-but-empty file shouldn't beat a populated
+  // one. Treat whitespace-only files as "not really invested in."
+  const agentsHasContent = agentsMd.exists && agentsMd.content.trim() !== "";
+  const claudeHasContent = claudeMd.exists && claudeMd.content.trim() !== "";
+
+  // AGENTS.md wins if it has content, OR if CLAUDE.md isn't a real
+  // option (missing or also empty). Both-empty case still goes to
+  // AGENTS.md because that's the universal default.
+  const preferAgents = agentsMd.exists && (agentsHasContent || !claudeHasContent);
+
+  if (preferAgents) {
+    let note: string | undefined;
+    if (claudeHasContent && /agents\.md/i.test(claudeMd.content)) {
+      note = "CLAUDE.md left alone — already delegates to AGENTS.md";
+    } else if (claudeHasContent) {
+      note = "CLAUDE.md left alone — AGENTS.md is the canonical location";
+    }
     return {
       action: "append",
       fileName: "AGENTS.md",
@@ -220,8 +272,11 @@ export async function initProject(
   //    so the universal instructions reach every agent.
   const agentsTarget = resolveAgentsFileTarget({
     projectPath,
-    claudeMd: readFileMaybe(join(projectPath, "CLAUDE.md")),
-    agentsMd: readFileMaybe(join(projectPath, "AGENTS.md")),
+    // Finding 6: case-insensitive lookup so Linux users with `Agents.md`
+    // (Codex's lowercase) or any non-canonical case still hit the
+    // existing file instead of creating a new one with our spelling.
+    claudeMd: findInstructionFile(projectPath, "CLAUDE.md"),
+    agentsMd: findInstructionFile(projectPath, "AGENTS.md"),
     sentinel: "sverklo_search",
   });
   let claudeMdCreatedByInit = false;

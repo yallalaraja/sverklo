@@ -148,9 +148,11 @@ const fullName = computed(() => currentUser.value?.name ?? '')
     expect(importSources).toContain("./UserCard.vue");
     expect(importSources).toContain("./ui/BaseAvatar.vue");
 
-    // Component refs from template (treated as relative imports)
-    expect(importSources).toContain("./UserCard");
-    expect(importSources).toContain("./BaseAvatar");
+    // Finding 11: Template component refs that already match a script
+    // import (by filename basename) are deduped — we don't emit a
+    // second `./UserCard` edge when `./UserCard.vue` already exists.
+    expect(importSources).not.toContain("./UserCard");
+    expect(importSources).not.toContain("./BaseAvatar");
 
     // Symbols from script
     const chunkNames = result.chunks.map((c) => c.name);

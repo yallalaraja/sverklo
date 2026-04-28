@@ -36,7 +36,7 @@ npm install -g sverklo
 cd your-project && sverklo init
 ```
 
-That's it. `sverklo init` auto-detects your installed AI coding agent (Claude Code, Cursor, Windsurf, Zed), writes the right MCP config, appends instructions to your `CLAUDE.md`, and runs `sverklo doctor` to verify the setup. **No API keys. No cloud. Telemetry off by default.**
+That's it. `sverklo init` auto-detects your installed AI coding agent (Claude Code, Cursor, Windsurf, Zed), writes the right MCP config, appends instructions to `AGENTS.md` if present (otherwise `CLAUDE.md`), and runs `sverklo doctor` to verify the setup. Works on macOS, Linux, and Windows. **No API keys. No cloud. Telemetry off by default.**
 
 > The embedding model (`all-MiniLM-L6-v2` ONNX, ~86 MB) is downloaded from HuggingFace on first use into `~/.sverklo/models/` and cached forever — every subsequent run is fully offline.
 
@@ -44,10 +44,13 @@ That's it. `sverklo init` auto-detects your installed AI coding agent (Claude Co
 
 ---
 
-## What's new in 0.17
+## What's new in 0.18
 
+- **Vue.js (.vue) support.** Single-file components are now first-class: the `<script>` block parses through the existing TS/JS pipeline (with line remapping back to the SFC), Composition API helpers (`ref`, `computed`, `reactive`, `defineProps`, …) are indexed as symbols, and PascalCase template tags emit relative imports so PageRank sees component graphs. Also fixes a preexisting TS bug where `import type { X } from 'y'` was missed.
+- **AGENTS.md aware `sverklo init`.** When [AGENTS.md](https://agents.md) exists, the prefer-sverklo block is appended there instead of `CLAUDE.md`. `sverklo doctor` flags drift between the two files so multi-agent setups stay in sync.
+- **Windows pathing fixed.** `sverklo init` and `sverklo doctor` now work on Windows — absolute paths go through `path.basename()` and stored `relativePath` is normalized to forward slashes so every downstream consumer is cross-platform.
 - **`npm run bench:swe`** — third-party-reproducible cross-repo eval. Clones 5 OSS repos (express, nestjs, vite, prisma, fastapi), runs 65 grounded questions, prints aggregated recall. PRs that add questions are welcome.
-- **Tree-sitter parser opt-in.** `sverklo grammars install` (~3.5 MB across 6 languages) + `SVERKLO_PARSER=tree-sitter` and the indexer routes through real ASTs for TypeScript/TSX/JavaScript/Python/Go/Rust. Silent regex fallback when grammars aren't installed. v0.18 plan to flip the default lives in [docs/parser-parity.md](./docs/parser-parity.md).
+- **Tree-sitter parser opt-in.** `sverklo grammars install` (~3.5 MB across 6 languages) + `SVERKLO_PARSER=tree-sitter` routes the indexer through real ASTs for TypeScript/TSX/JavaScript/Python/Go/Rust. Silent regex fallback when grammars aren't installed. Plan to flip the default lives in [docs/parser-parity.md](./docs/parser-parity.md).
 - **Workspace shared memory.** `sverklo workspace memory <name> add/list/search` plus `sverklo_remember scope:"workspace"` from the agent — write a decision once, query it from every other repo in the workspace. `sverklo_recall` blends workspace results under project ones with a `[ws]` badge.
 - **`sverklo memory export`** — markdown / Notion / JSON. Migrate your team's decision log to wherever it actually lives.
 - **PR-bot inline review.** `sverklo review --format github-review-json` + the action's new `inline-comments: true` default posts per-line review comments via `pulls.createReview`, alongside the existing sticky summary.
@@ -210,7 +213,7 @@ Every memory carries `valid_from_sha` and `valid_until_sha`. Updating a memory d
 
 ```mermaid
 graph LR
-    A[Your Code] --> B[Parse<br/>10 languages]
+    A[Your Code] --> B[Parse<br/>11 languages]
     B --> C[Embed<br/>ONNX/Ollama]
     B --> D[Build Graph<br/>imports/exports]
     D --> E[PageRank<br/>importance]
@@ -224,7 +227,7 @@ graph LR
     J --> K[Token-Budgeted<br/>Response]
 ```
 
-1. **Parses** your codebase into functions, classes, types (TS, JS, Python, Go, Rust, Java, C, C++, Ruby, PHP)
+1. **Parses** your codebase into functions, classes, types (TS, JS, Vue, Python, Go, Rust, Java, C, C++, Ruby, PHP)
 2. **Embeds** code using all-MiniLM-L6-v2 ONNX model (384d, fully local) — or any Ollama model via config
 3. **Builds** a dependency graph and computes PageRank (structurally important files rank higher)
 4. **Searches** using hybrid BM25 + vector similarity + PageRank, fused via Reciprocal Rank Fusion
@@ -245,7 +248,7 @@ Real measurements on real codebases. Reproducible via `npm run bench` ([methodol
 
 - **Search p95 stays under 26 ms** even on a 4k-file monorepo
 - **Impact analysis is sub-millisecond** — indexed SQL join, not a string scan
-- **10 languages:** TS, JS, Python, Go, Rust, Java, C, C++, Ruby, PHP
+- **11 languages:** TS, JS, Vue, Python, Go, Rust, Java, C, C++, Ruby, PHP
 
 ---
 

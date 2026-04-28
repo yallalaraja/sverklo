@@ -46,17 +46,37 @@ interface SFCBlock {
 
 interface SFCBlocks {
   template: SFCBlock | null;
+  /** The block we treat as canonical for symbol extraction (setup if both exist). */
   script: SFCBlock | null;
+  /** The "other" script block when both `<script>` and `<script setup>` exist.
+   *  We extract imports from BOTH so vue-extras setups (where one block holds
+   *  metadata like defineOptions and the other holds reactive logic) keep all
+   *  their dependency edges. Symbol extraction still only runs on `script`. */
+  scriptSecondary: SFCBlock | null;
   style: SFCBlock | null;
+  /** Custom top-level blocks like <i18n>, <route>, <docs> — captured
+   *  for full-text search indexing. Vue ecosystem libraries
+   *  (vite-plugin-pages, vue-i18n, unplugin-vue-router) put real
+   *  configuration data in these blocks; ignoring them makes that
+   *  data invisible to sverklo_search. Finding 8. */
+  customBlocks: Array<SFCBlock & { tagName: string }>;
 }
 
 const BLOCK_RE = /<(template|script|style)([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
+const CUSTOM_BLOCK_RE = /<([a-z][a-z0-9-]*)([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
+const KNOWN_TAGS = new Set(["template", "script", "style"]);
 const LANG_ATTR_RE = /\blang\s*=\s*["']([^"']+)["']/i;
 const SETUP_ATTR_RE = /\bsetup\b/i;
 const COMPONENT_TAG_RE = /<([A-Z][A-Za-z0-9]*)\b/g;
 
 export function parseSFCBlocks(content: string): SFCBlocks {
-  const result: SFCBlocks = { template: null, script: null, style: null };
+  const result: SFCBlocks = {
+    template: null,
+    script: null,
+    scriptSecondary: null,
+    style: null,
+    customBlocks: [],
+  };
 
   // Track newline positions once so we can map character offsets to
   // 1-indexed line numbers without splitting the whole string per match.
@@ -102,9 +122,16 @@ export function parseSFCBlocks(content: string): SFCBlocks {
     };
 
     if (tagName === "script") {
-      // Vue allows one regular <script> AND one <script setup>; prefer setup.
-      if (!result.script || (block.setup && !result.script.setup)) {
+      // Vue allows one regular <script> AND one <script setup>. Prefer
+      // setup as the canonical block for symbol extraction, but keep
+      // both so we can union their import lists later (Finding 3).
+      if (!result.script) {
         result.script = block;
+      } else if (block.setup && !result.script.setup) {
+        result.scriptSecondary = result.script;
+        result.script = block;
+      } else if (!block.setup && result.script.setup) {
+        result.scriptSecondary = block;
       }
     } else if (tagName === "template" && !result.template) {
       result.template = block;
@@ -113,14 +140,65 @@ export function parseSFCBlocks(content: string): SFCBlocks {
     }
   }
 
+  // Second pass: capture top-level custom blocks (<i18n>, <route>,
+  // <docs>, <preview>, etc.) that aren't template/script/style.
+  // Skip blocks nested inside template/script/style — those are HTML
+  // children, not SFC siblings. We use the rough heuristic that a
+  // top-level custom block sits OUTSIDE the regions covered by
+  // template/script/scriptSecondary/style content.
+  const occupied: Array<{ start: number; end: number }> = [];
+  for (const blk of [result.template, result.script, result.scriptSecondary, result.style]) {
+    if (!blk) continue;
+    // We don't have stored char offsets; reconstruct via indexOf on the
+    // raw content. Cheap because each SFC is small.
+    const idx = content.indexOf(blk.content);
+    if (idx >= 0) occupied.push({ start: idx, end: idx + blk.content.length });
+  }
+  CUSTOM_BLOCK_RE.lastIndex = 0;
+  let cm: RegExpExecArray | null;
+  while ((cm = CUSTOM_BLOCK_RE.exec(content)) !== null) {
+    const tagName = cm[1].toLowerCase();
+    if (KNOWN_TAGS.has(tagName)) continue;
+    const innerStart = cm.index + cm[0].indexOf(">") + 1;
+    const innerEnd = innerStart + cm[3].length;
+    const insideKnownBlock = occupied.some(
+      (r) => innerStart >= r.start && innerEnd <= r.end
+    );
+    if (insideKnownBlock) continue;
+    let firstNonNewline = innerStart;
+    while (firstNonNewline < innerEnd && content[firstNonNewline] === "\n") {
+      firstNonNewline++;
+    }
+    result.customBlocks.push({
+      startLine: lineOf(firstNonNewline),
+      endLine: lineOf(Math.max(innerStart, innerEnd - 1)),
+      content: cm[3],
+      lang: LANG_ATTR_RE.exec(cm[2] || "")?.[1]?.toLowerCase(),
+      tagName,
+    });
+  }
+
   return result;
 }
 
 export function extractComponentRefs(template: string): string[] {
+  // Strip places where a `<PascalCase>` substring appears but isn't a
+  // real component usage:
+  //   - HTML comments: `<!-- TODO: <NewWidget /> -->`
+  //   - Attribute values: `tooltip="Show <Profile /> here"`
+  //   - Mustache interpolations: `{{ 'Render <Widget />' }}`
+  // Without this, every false-positive becomes a phantom import edge
+  // that pollutes PageRank.
+  const cleaned = template
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/="[^"]*"/g, '=""')
+    .replace(/='[^']*'/g, "=''")
+    .replace(/\{\{[\s\S]*?\}\}/g, "");
+
   const refs = new Set<string>();
   let m: RegExpExecArray | null;
   COMPONENT_TAG_RE.lastIndex = 0;
-  while ((m = COMPONENT_TAG_RE.exec(template)) !== null) {
+  while ((m = COMPONENT_TAG_RE.exec(cleaned)) !== null) {
     refs.add(m[1]);
   }
   return [...refs];
@@ -211,12 +289,37 @@ export function parseVue(content: string, _lines: string[]): ParseResult {
     extractReactiveSymbols(scriptLines, offset, seenNames, chunks);
   }
 
+  // Finding 3: when both <script> and <script setup> exist, the user
+  // typically puts metadata (defineOptions, name) in the plain block
+  // and reactive logic in setup. Imports from BOTH blocks are real
+  // dependencies; dropping the secondary block's imports broke
+  // PageRank edges for any file that did this.
+  if (blocks.scriptSecondary) {
+    let secondaryContent = blocks.scriptSecondary.content;
+    while (secondaryContent.startsWith("\n")) {
+      secondaryContent = secondaryContent.slice(1);
+    }
+    const secondaryLines = secondaryContent.split("\n");
+    const secondaryResult = parseTSJS(secondaryContent, secondaryLines);
+    imports.push(...secondaryResult.imports);
+  }
+
   if (blocks.template) {
     // PascalCase tags in templates are component references. Emit as
     // relative imports so the graph builder can resolve them against
     // the file table (./UserCard → UserCard.vue at depth-1).
+    // Finding 11: skip refs that already appear as script imports —
+    // otherwise PageRank double-counts the edge weight.
+    const importedNames = new Set<string>();
+    for (const imp of imports) {
+      for (const name of imp.names) importedNames.add(name);
+      // Also catch `./UserCard.vue` import → `<UserCard />` template usage.
+      const baseFromSource = imp.source.split("/").pop()?.replace(/\.(vue|tsx?|jsx?|mjs|cjs)$/, "");
+      if (baseFromSource) importedNames.add(baseFromSource);
+    }
     const componentRefs = extractComponentRefs(blocks.template.content);
     for (const ref of componentRefs) {
+      if (importedNames.has(ref)) continue;
       imports.push({
         source: `./${ref}`,
         names: [ref],
@@ -234,6 +337,20 @@ export function parseVue(content: string, _lines: string[]): ParseResult {
       startLine: blocks.template.startLine,
       endLine: blocks.template.endLine,
       content: blocks.template.content,
+    });
+  }
+
+  // Custom blocks (<i18n>, <route>, <docs>, ...): emit each as a
+  // generic block chunk so its content is searchable. No symbol
+  // extraction — these blocks hold config data, not code.
+  for (const cb of blocks.customBlocks) {
+    chunks.push({
+      type: "block",
+      name: cb.tagName,
+      signature: cb.lang ? `lang=${cb.lang}` : null,
+      startLine: cb.startLine,
+      endLine: cb.endLine,
+      content: cb.content,
     });
   }
 

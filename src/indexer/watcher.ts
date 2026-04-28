@@ -4,7 +4,19 @@ import { detectLanguage } from "../types/index.js";
 import { createIgnoreFilter } from "../utils/ignore.js";
 import { loadSverkloConfig } from "../utils/config-file.js";
 import { log } from "../utils/logger.js";
+import { toForwardSlashes } from "./file-discovery.js";
 import type { Indexer } from "./indexer.js";
+
+/**
+ * Finding 5: every relativePath the watcher hands to the indexer must
+ * be in the same canonical (forward-slash) form that file-discovery.ts
+ * stores. On Windows, native `relative()` returns `src\foo.ts`, while
+ * the indexer's primary key is `src/foo.ts`. Without normalization,
+ * each Windows file edit creates a duplicate row instead of upserting.
+ */
+function relForward(rootPath: string, absolutePath: string): string {
+  return toForwardSlashes(relative(rootPath, absolutePath));
+}
 
 /** File names that, when changed, should trigger a full reindex. */
 const CONFIG_FILES = new Set([".sverklo.yaml", ".sverklo.yml"]);
@@ -18,7 +30,7 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
 
   const watcher = watch(rootPath, {
     ignored: (path: string) => {
-      const rel = relative(rootPath, path);
+      const rel = relForward(rootPath, path);
       if (!rel) return false;
       // Never ignore config files — we need to watch them for changes
       if (CONFIG_FILES.has(rel)) return false;
@@ -35,7 +47,7 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
   });
 
   function handleConfigChange(absolutePath: string) {
-    const rel = relative(rootPath, absolutePath);
+    const rel = relForward(rootPath, absolutePath);
     log(`Config file changed: ${rel} — triggering full reindex`);
     indexer.invalidateFreshnessCache();
 
@@ -56,7 +68,7 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
   }
 
   function handleChange(absolutePath: string) {
-    const rel = relative(rootPath, absolutePath);
+    const rel = relForward(rootPath, absolutePath);
 
     // Config file changes trigger a full reindex
     if (CONFIG_FILES.has(rel)) {
@@ -88,7 +100,7 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
   watcher.on("add", handleChange);
   watcher.on("change", handleChange);
   watcher.on("unlink", (absolutePath: string) => {
-    const rel = relative(rootPath, absolutePath);
+    const rel = relForward(rootPath, absolutePath);
 
     // Config file deletion also triggers reindex (weights reset to defaults)
     if (CONFIG_FILES.has(rel)) {

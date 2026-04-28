@@ -257,29 +257,51 @@ export function parseTSJS(content: string, lines: string[]): ParseResult {
   const chunks: ParsedChunk[] = [];
   const imports: ImportRef[] = [];
 
-  // Extract imports. The optional `(?:type\s+)?` after `import` covers
-  // TypeScript's `import type { X } from 'y'` and `import type X from 'y'`
-  // — without it, every type-only import edge in a TS codebase is missed
-  // by the regex parser.
+  // Extract imports. Several real-world cases the original anchor missed:
+  //   - Indented script blocks in Vue SFCs (`  import …`) — the `^`
+  //     anchor without leading-whitespace tolerance dropped 99.8% of
+  //     imports on Vuetify (1080 .vue files, 451 imports, 1 captured).
+  //   - `import type { X } from 'y'` and `import type X from 'y'` —
+  //     TS type-only edges were absent from the dependency graph.
+  //   - `import { type X, Y } from 'z'` — inline mixed form. Without
+  //     stripping `type ` from individual names, the symbol got
+  //     stored as "type X" and sverklo_lookup couldn't find it.
+  //   - `import X, { Y } from 'z'` — default + named combo (React's
+  //     `import React, { useState }` pattern). Pre-existing miss.
   const importRe =
-    /^import\s+(?:type\s+)?(?:{([^}]+)}\s+from\s+['"]([^'"]+)['"]|(\w+)\s+from\s+['"]([^'"]+)['"]|['"]([^'"]+)['"])/gm;
+    /^[ \t]*import\s+(?:type\s+)?(?:(\w+)\s*,\s*\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]|\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]|(\w+)\s+from\s+['"]([^'"]+)['"]|['"]([^'"]+)['"])/gm;
   let m;
   while ((m = importRe.exec(content)) !== null) {
-    const names = m[1]
-      ? m[1].split(",").map((s) => s.trim().split(/\s+as\s+/)[0])
-      : m[3]
-        ? [m[3]]
-        : [];
-    const source = m[2] || m[4] || m[5] || "";
+    // Match groups, by branch:
+    //   default + named:  m[1]=default name, m[2]=named-list, m[3]=source
+    //   named only:       m[4]=named-list, m[5]=source
+    //   default only:     m[6]=name, m[7]=source
+    //   bare:             m[8]=source
+    const names: string[] = [];
+    if (m[1] && m[2]) {
+      names.push(m[1]);
+      for (const n of m[2].split(",")) {
+        const cleaned = n.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0];
+        if (cleaned) names.push(cleaned);
+      }
+    } else if (m[4]) {
+      for (const n of m[4].split(",")) {
+        const cleaned = n.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0];
+        if (cleaned) names.push(cleaned);
+      }
+    } else if (m[6]) {
+      names.push(m[6]);
+    }
+    const source = m[3] || m[5] || m[7] || m[8] || "";
     imports.push({
       source,
-      names: names.filter(Boolean),
+      names,
       isRelative: source.startsWith("."),
     });
   }
 
-  // require() imports
-  const requireRe = /(?:const|let|var)\s+(?:{([^}]+)}|(\w+))\s*=\s*require\(['"]([^'"]+)['"]\)/gm;
+  // require() imports — same leading-whitespace tolerance.
+  const requireRe = /^[ \t]*(?:const|let|var)\s+(?:{([^}]+)}|(\w+))\s*=\s*require\(['"]([^'"]+)['"]\)/gm;
   while ((m = requireRe.exec(content)) !== null) {
     const names = m[1]
       ? m[1].split(",").map((s) => s.trim())
