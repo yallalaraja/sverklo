@@ -1,6 +1,7 @@
 import type { ParsedChunk, ParseResult, ImportRef, ChunkType } from "../types/index.js";
 import { parseMarkdown } from "./parser-md.js";
 import { parseIpynb } from "./parser-ipynb.js";
+import { parseVue } from "./parser-vue.js";
 
 // Regex-based parser for MVP. Fast, no native dependencies.
 // Handles the top languages well enough. Tree-sitter upgrade path for v2.
@@ -85,6 +86,8 @@ function parseFileInner(
       return parseClojure(content, lines);
     case "ocaml":
       return parseOCaml(content, lines);
+    case "vue":
+      return parseVue(content, lines);
     case "markdown":
       return parseMarkdown(content, lines);
     case "notebook":
@@ -250,13 +253,16 @@ function stripCommentMarkers(line: string, style: CommentStyle): string {
 
 // ── TypeScript / JavaScript ─────────────────────────────────────────
 
-function parseTSJS(content: string, lines: string[]): ParseResult {
+export function parseTSJS(content: string, lines: string[]): ParseResult {
   const chunks: ParsedChunk[] = [];
   const imports: ImportRef[] = [];
 
-  // Extract imports
+  // Extract imports. The optional `(?:type\s+)?` after `import` covers
+  // TypeScript's `import type { X } from 'y'` and `import type X from 'y'`
+  // — without it, every type-only import edge in a TS codebase is missed
+  // by the regex parser.
   const importRe =
-    /^import\s+(?:{([^}]+)}\s+from\s+['"]([^'"]+)['"]|(\w+)\s+from\s+['"]([^'"]+)['"]|['"]([^'"]+)['"])/gm;
+    /^import\s+(?:type\s+)?(?:{([^}]+)}\s+from\s+['"]([^'"]+)['"]|(\w+)\s+from\s+['"]([^'"]+)['"]|['"]([^'"]+)['"])/gm;
   let m;
   while ((m = importRe.exec(content)) !== null) {
     const names = m[1]

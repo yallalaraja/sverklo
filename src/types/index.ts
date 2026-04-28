@@ -187,6 +187,7 @@ export const SUPPORTED_LANGUAGES: Record<string, string[]> = {
   haskell: [".hs", ".lhs"],
   clojure: [".clj", ".cljs", ".cljc", ".edn"],
   ocaml: [".ml", ".mli"],
+  vue: [".vue"],
   markdown: [".md", ".markdown", ".mdx"],
   notebook: [".ipynb"],
 };
