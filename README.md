@@ -58,6 +58,30 @@ That's it. `sverklo init` auto-detects your installed AI coding agent (Claude Co
 
 ---
 
+## "But isn't this just…?"
+
+Likely you've seen tools that look adjacent. The honest one-paragraph answers, with detailed comparisons linked.
+
+**…just grep with extra steps?** No, but tuned grep is genuinely competitive on F1. On the [60-task bench](https://sverklo.com/bench/) a tuned grep beats sverklo on F1 by 9 points. Sverklo wins by 62× on input tokens and 7-12× on tool-call count. For an AI agent inside a 200K context window, that's the load-bearing axis. For a human at a terminal, smart grep is fine.
+
+**…just Sourcegraph Cody?** Same retrieval surface (hybrid BM25 + vector + graph), different deployment model and license. Cody is source-available with enterprise per-developer pricing ($9-19/dev/mo); sverklo is MIT and runs on a laptop with no signup. [Full comparison →](https://sverklo.com/vs/sourcegraph-cody/)
+
+**…just Greptile?** Greptile is a hosted PR-review bot ($30/dev/mo). Sverklo is local-first MCP. Same risk-scoring goal, opposite deployment model. If your code can't leave the machine for compliance reasons, Greptile isn't an option. [Full comparison →](https://sverklo.com/vs/greptile/)
+
+**…just Cursor's @codebase?** Cursor's indexing is cloud-based and editor-bound. Sverklo runs alongside Cursor as an MCP server, adding the symbol graph, blast-radius, and bi-temporal memory that Cursor's @codebase doesn't expose. [Full comparison →](https://sverklo.com/vs/cursor-codebase/)
+
+**…just Claude Context (Zilliz)?** Claude Context requires a Milvus database. Sverklo runs entirely on embedded SQLite — no extra services to manage. [Full comparison →](https://sverklo.com/vs/claude-context/)
+
+**…just Aider's repo-map?** Aider's repo-map is a static signal in the system prompt — fine for small repos, doesn't scale past ~100 files. Sverklo is the queryable retrieval layer Aider can call via MCP for larger codebases. They're complementary, not competing. [Full comparison →](https://sverklo.com/vs/aider/)
+
+**…a niche memory MCP?** Most memory MCPs are wrappers around an external vector DB. Sverklo's memory is bi-temporal (`valid_from_sha`, `valid_until_sha`, `superseded_by`) and pinned to git SHAs, so you can ask "what did this team believe about auth at commit `abc123`?" and get the answer that was true *then*. [Full comparison vs codebase-memory-mcp →](https://sverklo.com/vs/codebase-memory-mcp/)
+
+**…what about Aider, Continue, Codex CLI, Claude Code?** Those are *agents* — they generate and apply edits. Sverklo is the *retrieval layer* the agent calls before writing code. Use both. [`sverklo init` auto-detects which agents you have →](#works-with-every-mcp-editor)
+
+If something is missing here that you'd ask about, [open an issue](https://github.com/sverklo/sverklo/issues) — I'll add it.
+
+---
+
 ## What's new in 0.18
 
 - **Vue.js (.vue) support.** Single-file components are now first-class: the `<script>` block parses through the existing TS/JS pipeline (with line remapping back to the SFC), Composition API helpers (`ref`, `computed`, `reactive`, `defineProps`, …) are indexed as symbols, and PascalCase template tags emit relative imports so PageRank sees component graphs. Also fixes a preexisting TS bug where `import type { X } from 'y'` was missed.
@@ -244,28 +268,57 @@ Every memory carries `valid_from_sha` and `valid_until_sha`. Updating a memory d
 
 ## How It Works
 
-```mermaid
-graph LR
-    A[Your Code] --> B[Parse<br/>11 languages]
-    B --> C[Embed<br/>ONNX/Ollama]
-    B --> D[Build Graph<br/>imports/exports]
-    D --> E[PageRank<br/>importance]
-    
-    F[Agent Query] --> G[BM25]
-    F --> H[Vector Search]
-    E --> I[PageRank Boost]
-    G --> J[RRF Fusion]
-    H --> J
-    I --> J
-    J --> K[Token-Budgeted<br/>Response]
+```
+Your codebase                                              Agent query
+     │                                                          │
+     ▼                                                          ▼
+┌─────────────┐                                          ┌─────────────┐
+│   Parse     │  tree-sitter (12 langs) or               │  Tool call  │
+│   chunks    │  regex fallback                          │  (1 of 37)  │
+└──────┬──────┘                                          └──────┬──────┘
+       │                                                         │
+       ├─────────────┐         Index time                        │
+       │             │                                           │
+       ▼             ▼                                           │
+  ┌────────┐    ┌─────────┐                                      │
+  │ Embed  │    │ Import  │                                      │
+  │ ONNX   │    │ graph   │                                      │
+  │ MiniLM │    │ + PageRank                                     │
+  └───┬────┘    └────┬────┘                                      │
+      │              │                                           │
+      ▼              ▼                                           │
+  ┌──────────────────────────┐                                   │
+  │ SQLite + sqlite-vec      │ ← single-file index, ~/.sverklo/  │
+  │ chunks · embeddings ·    │                                   │
+  │ symbols · refs · imports │                                   │
+  │ memories (bi-temporal)   │                                   │
+  └────────────┬─────────────┘                                   │
+               │                                                 │
+               │            Query time                           │
+               ▼                                                 ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │             Channelized RRF retrieval                    │
+        │                                                          │
+        │   FTS · Vector · Doc-section · Path · Symbol-name        │
+        │      └─ each ranked independently ─┘                     │
+        │                                                          │
+        │   Fused with channel weights (path 1.5×, doc 0.7×, …)   │
+        └─────────────────────────┬────────────────────────────────┘
+                                  │
+                                  ▼
+                       ┌────────────────────────┐
+                       │ Token-budgeted answer  │ ← the agent gets
+                       │ file:line + chunk      │   ranked code, not
+                       │ + provenance           │   a wall of text
+                       └────────────────────────┘
 ```
 
-1. **Parses** your codebase into functions, classes, types (TS, JS, Vue, Python, Go, Rust, Java, C, C++, Ruby, PHP)
-2. **Embeds** code using all-MiniLM-L6-v2 ONNX model (384d, fully local) — or any Ollama model via config
-3. **Builds** a dependency graph and computes PageRank (structurally important files rank higher)
-4. **Searches** using hybrid BM25 + vector similarity + PageRank, fused via Reciprocal Rank Fusion
-5. **Remembers** decisions and patterns across sessions, linked to git state
-6. **Watches** for file changes and updates incrementally
+1. **Parse** your codebase into functions, classes, types (TS, JS, Vue, Python, Go, Rust, Java, C, C++, Ruby, PHP, C#)
+2. **Embed** code using all-MiniLM-L6-v2 ONNX (384d, fully local) — or any Ollama model via config
+3. **Graph** dependencies and compute PageRank (structurally important files rank higher)
+4. **Retrieve** via channelized RRF — per-channel rank fusion with channel-specific weights, the architectural choice that closes the private-helper-function recall gap
+5. **Remember** decisions across sessions, pinned to git SHAs (bi-temporal memory)
+6. **Watch** for file changes and re-index incrementally (~1 s per edit)
 
 ---
 
