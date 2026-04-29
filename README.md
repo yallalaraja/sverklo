@@ -82,6 +82,10 @@ If something is missing here that you'd ask about, [open an issue](https://githu
 
 ---
 
+## What's new in 0.19
+
+- **C# (.cs) language support** — community contribution by [@NerdChieftain](https://github.com/NerdChieftain) in [#22](https://github.com/sverklo/sverklo/pull/22). Tree-sitter (when grammar installed) plus a regex fallback parser. Indexes namespaces (block-scoped + C# 10+ file-scoped), classes, structs, records (plain / `record class` / `record struct`), interfaces, enums, methods, constructors, and `using` directives. Adds `tree-sitter-c-sharp@0.23.5` WASM grammar to the install set. **Sverklo now supports 12 languages.**
+
 ## What's new in 0.18
 
 - **Vue.js (.vue) support.** Single-file components are now first-class: the `<script>` block parses through the existing TS/JS pipeline (with line remapping back to the SFC), Composition API helpers (`ref`, `computed`, `reactive`, `defineProps`, …) are indexed as symbols, and PascalCase template tags emit relative imports so PageRank sees component graphs. Also fixes a preexisting TS bug where `import type { X } from 'y'` was missed.
@@ -334,7 +338,7 @@ Real measurements on real codebases. Reproducible via `npm run bench` ([methodol
 
 - **Search p95 stays under 26 ms** even on a 4k-file monorepo
 - **Impact analysis is sub-millisecond** — indexed SQL join, not a string scan
-- **11 languages:** TS, JS, Vue, Python, Go, Rust, Java, C, C++, Ruby, PHP
+- **12 languages:** TS, JS, Vue, Python, Go, Rust, Java, C, C++, Ruby, PHP, C#
 
 ### Retrieval benchmark — bench:primitives
 
