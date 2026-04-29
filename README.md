@@ -6,16 +6,26 @@
   🇬🇧 <b>English</b> · 🇨🇳 <a href="./README-zh-CN.md">中文</a>
 </p>
 
-> **The only code-intel MCP with a published benchmark and reproducible eval harness.**
-> Local-first MCP server that gives Claude Code, Cursor, Windsurf, and Zed a real symbol graph, a blast-radius lens, and a git-pinned memory — so the agent stops guessing. MIT. Zero config. Your code never leaves the machine.
+> *"The map is not the territory."* — Alfred Korzybski
 >
-> [Paper (Zenodo, CC BY 4.0)](https://doi.org/10.5281/zenodo.19802051) · [bench:primitives](./benchmark/) — sverklo cuts agent context by **65 % vs grep** (255 vs 731 tokens per task, n=60) · [bench:swe](https://sverklo.com/blog/bench-swe-first-results/) — 38/65 perfect recall on 5 OSS repos, including the runs we lose.
+> Training data is the map. Your codebase is the territory. **Sverklo gives the agent the territory.**
+
+**The only code-intel MCP with a published benchmark and reproducible eval harness.** Local-first MCP server that gives Claude Code, Cursor, Windsurf, and Zed a real symbol graph, a blast-radius lens, and a git-pinned memory — so the agent stops guessing. MIT. Zero config. Your code never leaves the machine.
+
+[Paper (Zenodo, CC BY 4.0)](https://doi.org/10.5281/zenodo.19802051) · [bench:primitives](https://sverklo.com/bench/) — **62× fewer tokens than naive grep**, 2.9× fewer than tuned grep, single tool call vs grep's 7-12 (n=60) · [bench:swe](https://sverklo.com/blog/bench-swe-first-results/) — 38/65 perfect recall on 5 OSS repos, including the runs we lose.
+
+### One-click install
+
+[![Install in Claude Code](https://img.shields.io/badge/Claude_Code-Install_Plugin-CC785C?style=for-the-badge&logoColor=white)](#claude-code) [![Install in Cursor](https://img.shields.io/badge/Cursor-Install_MCP-F14C28?style=for-the-badge&logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=sverklo&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInN2ZXJrbG8iXX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_MCP-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=sverklo&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22sverklo%22%5D%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_MCP-24bfa5?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=sverklo&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22sverklo%22%5D%7D&quality=insiders) [![Install in Windsurf](https://img.shields.io/badge/Windsurf-sverklo_init-09B6A2?style=for-the-badge&logoColor=white)](#windsurf--zed--vs-code--jetbrains)
 
 [![npm version](https://img.shields.io/npm/v/sverklo.svg?color=E85A2A)](https://www.npmjs.com/package/sverklo)
 [![npm downloads](https://img.shields.io/npm/dw/sverklo.svg?color=E85A2A)](https://www.npmjs.com/package/sverklo)
 [![License: MIT](https://img.shields.io/badge/license-MIT-E85A2A.svg)](LICENSE)
 [![Audited repos](https://img.shields.io/badge/audited_repos-47-E85A2A)](https://sverklo.com/report)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19802051.svg)](https://doi.org/10.5281/zenodo.19802051)
+[![GitHub stars](https://img.shields.io/github/stars/sverklo/sverklo?style=social)](https://github.com/sverklo/sverklo/stargazers)
+
+> ⭐ **If sverklo saved your AI from hallucinating, please star this repo** — it's the single most useful thing you can do to help others find it. Then [share with one teammate](https://twitter.com/intent/tweet?text=Local-first%20MCP%20code%20intelligence%20for%20AI%20coding%20agents%20%E2%80%94%20MIT%2C%20zero-deps%2C%20honest%20benchmark%20%40%20https%3A%2F%2Fsverklo.com%2Fbench%2F) who's tired of `getUserByEmail()` not existing in their codebase.
 
 ![Sverklo cuts agent context by 65 % vs grep — bench:primitives, 60 retrieval tasks, peer-reviewable](./docs/hero-token-comparison.png)
 
@@ -129,7 +139,7 @@ If the answer to your question is "exact string X exists somewhere," grep wins. 
 | `sverklo_impact` | Walk the symbol graph, return ranked transitive callers (the real blast radius) |
 | `sverklo_refs` | Find all references to a symbol, with caller context |
 | `sverklo_deps` | File dependency graph — both directions, importers and imports |
-| `sverklo_audit` | Surface god nodes, hub files, dead code candidates in one call |
+| `sverklo_audit` | **Lint your codebase for AI-readiness.** God nodes, hub files, dead code, circular deps, security smells, A-F health grade — all in one call |
 
 ### Review — diff-aware MR review with risk scoring
 | Tool | What |
@@ -343,9 +353,19 @@ npx sverklo /path/to/your/project
 
 ---
 
-## Audit formats
+## Lint for AI-readiness — `sverklo audit`
 
-`sverklo audit` generates codebase health reports in six formats: `markdown`, `html`, `json`, `sarif`, `csv`, and `badges`. Run `sverklo audit --format html --open` for a self-contained report with god nodes, hub files, orphan detection, coupling analysis, and language distribution. Use `sverklo audit --badge` to add an A-F health grade shield to your README.
+Most lints check syntax. `sverklo audit` lints whether your codebase is **legible to an AI agent**: high blast-radius "god nodes" the agent will trip on, hub files that cascade widely on every change, orphan symbols that might be dead code or might be public API, circular dependencies that confuse the symbol graph, and a security smell scan. Outputs an A-F health grade you can pin as a README badge.
+
+```bash
+sverklo audit                     # markdown report in the terminal
+sverklo audit --format html --open  # self-contained HTML you can share
+sverklo audit --badge             # A-F shield markdown for your README
+sverklo audit --format sarif      # GitHub code-scanning alerts
+sverklo audit --format json       # machine-readable for CI gates
+```
+
+Six formats: `markdown`, `html`, `json`, `sarif`, `csv`, `badges`. Pair with `sverklo_impact` (the MCP tool) when you want to see the per-symbol blast radius before refactoring.
 
 ---
 
@@ -424,6 +444,18 @@ BibTeX:
   url       = {https://doi.org/10.5281/zenodo.19802051}
 }
 ```
+
+## Star history
+
+<a href="https://www.star-history.com/#sverklo/sverklo&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=sverklo/sverklo&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=sverklo/sverklo&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=sverklo/sverklo&type=date&legend=top-left" />
+  </picture>
+</a>
+
+If sverklo saved your AI from inventing function names that don't exist in your codebase, the most useful thing you can do is **⭐ star this repo** and share with one teammate.
 
 ## License
 
