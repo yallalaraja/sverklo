@@ -1,6 +1,19 @@
 import type Database from "better-sqlite3";
 import type { Memory, MemoryCategory, MemoryTier, MemoryKind } from "../types/index.js";
 
+// Parse the pins JSON column into a Set for O(1) overlap checks.
+// Returns an empty Set on null/undefined/malformed input.
+function parsePinsSet(pins: string | null | undefined): Set<string> {
+  if (!pins) return new Set();
+  try {
+    const parsed = JSON.parse(pins);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((p): p is string => typeof p === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
 // Default mapping from category → kind. Sprint 9: episodic/semantic/procedural
 // is orthogonal to category — we just need a sensible default for old call
 // sites that don't pass `kind` explicitly.
@@ -170,6 +183,79 @@ export class MemoryStore {
 
   getByCategory(category: MemoryCategory, limit: number = 50): Memory[] {
     return this.getByCategoryStmt.all(category, limit) as Memory[];
+  }
+
+  /**
+   * Find pairs of active memories that may contradict each other.
+   *
+   * v0.20 introduces conflict detection on the bi-temporal memory layer.
+   * Two memories are flagged as a conflict-candidate when they:
+   *   1. are both active (`valid_until_sha IS NULL`)
+   *   2. share at least one pin (file path or symbol name)
+   *   3. have category "decision", "preference", or "pattern" — the
+   *      categories where contradiction is meaningful (procedural and
+   *      context memories are usually additive, not contradicting)
+   *   4. were authored at different times (different `valid_from_sha`)
+   *
+   * The detection is intentionally conservative: it surfaces *candidates*,
+   * not confirmed contradictions. The agent or human reviewer decides
+   * whether the pair actually contradicts (e.g., "JWT in middleware" vs
+   * "JWT in route handler" pinned to the same file IS a contradiction;
+   * "validate input" vs "log all errors" pinned to the same file IS NOT).
+   *
+   * Returns pairs sorted by:
+   *   1. number of shared pins (more shared = stronger signal)
+   *   2. recency of the older memory (older = more likely to be stale)
+   *
+   * The semantic-similarity component (cosine over content embeddings)
+   * is intentionally NOT in this first version — it requires loading
+   * embeddings during the query, and the pin-overlap signal is already
+   * load-bearing enough on real corpora. Adding embedding-similarity
+   * is a v0.21 extension if pin-overlap proves too noisy in practice.
+   */
+  findConflicts(limit: number = 25): Array<{ a: Memory; b: Memory; sharedPins: string[] }> {
+    const candidates = this.db
+      .prepare(
+        `
+        SELECT * FROM memories
+        WHERE valid_until_sha IS NULL
+          AND pins IS NOT NULL
+          AND pins != '[]'
+          AND category IN ('decision', 'preference', 'pattern')
+        ORDER BY created_at DESC
+        `
+      )
+      .all() as Memory[];
+
+    const pairs: Array<{ a: Memory; b: Memory; sharedPins: string[] }> = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const a = candidates[i];
+      const aPins = parsePinsSet(a.pins);
+      if (aPins.size === 0) continue;
+      for (let j = i + 1; j < candidates.length; j++) {
+        const b = candidates[j];
+        // Skip pairs from the same SHA — those are co-recorded by the same
+        // remember call, not divergent beliefs.
+        if (a.valid_from_sha && a.valid_from_sha === b.valid_from_sha) continue;
+        const bPins = parsePinsSet(b.pins);
+        const shared: string[] = [];
+        for (const pin of aPins) {
+          if (bPins.has(pin)) shared.push(pin);
+        }
+        if (shared.length === 0) continue;
+        pairs.push({ a, b, sharedPins: shared });
+      }
+    }
+
+    pairs.sort((x, y) => {
+      const dShared = y.sharedPins.length - x.sharedPins.length;
+      if (dShared !== 0) return dShared;
+      const olderX = Math.min(x.a.created_at, x.b.created_at);
+      const olderY = Math.min(y.a.created_at, y.b.created_at);
+      return olderX - olderY;
+    });
+
+    return pairs.slice(0, limit);
   }
 
   delete(id: number): boolean {

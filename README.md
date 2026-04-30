@@ -82,6 +82,10 @@ If something is missing here that you'd ask about, [open an issue](https://githu
 
 ---
 
+## What's new in 0.20
+
+- **Contradiction detection on the bi-temporal memory layer.** `sverklo_memories mode:"conflicts"` surfaces pairs of active memories that share a pin (file path or symbol name) and may contradict — e.g., "JWT in middleware" vs "JWT in route handler" both pinned to `src/auth.ts`. Restricted to decision/preference/pattern categories (procedural/context are additive, not contradicting). Same-SHA pairs are skipped. Sorted by shared-pin count and age. Conservative by design: surfaces *candidates* for the agent or human to review, not auto-resolution. The bi-temporal model already preserved both sides of the contradiction; this just makes them findable.
+
 ## What's new in 0.19
 
 - **C# (.cs) language support** — community contribution by [@NerdChieftain](https://github.com/NerdChieftain) in [#22](https://github.com/sverklo/sverklo/pull/22). Tree-sitter (when grammar installed) plus a regex fallback parser. Indexes namespaces (block-scoped + C# 10+ file-scoped), classes, structs, records (plain / `record class` / `record struct`), interfaces, enums, methods, constructors, and `using` directives. Adds `tree-sitter-c-sharp@0.23.5` WASM grammar to the install set. **Sverklo now supports 12 languages.**
@@ -356,18 +360,38 @@ A tuned grep beats sverklo on F1. Sverklo wins decisively on token economy (62×
 
 ## Quick Start
 
-### Claude Code
+Three ways to install. Pick whichever matches your setup.
+
+<details open>
+<summary><b>⚡️ One-click install (Cursor / VS Code) — fastest</b></summary>
+<br/>
+
+[![Install in Cursor](https://img.shields.io/badge/Cursor-Install_MCP-F14C28?style=for-the-badge&logo=cursor&logoColor=white)](cursor://anysphere.cursor-deeplink/mcp/install?name=sverklo&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInN2ZXJrbG8iXX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_MCP-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=sverklo&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22sverklo%22%5D%7D)
+
+Click the badge for your editor. Cursor / VS Code prompt to confirm, then sverklo's MCP config is written automatically. Restart the editor and the 37 tools appear in the tool list. **No npm install required** — `npx` resolves it on first use.
+
+</details>
+
+<details>
+<summary><b>📦 Global install (Claude Code, Windsurf, Zed, Antigravity, any MCP client)</b></summary>
+<br/>
 
 ```bash
 npm install -g sverklo
 cd your-project && sverklo init
 ```
 
-Creates `.mcp.json` at your project root and appends sverklo instructions to `CLAUDE.md`. Safe to re-run. If sverklo doesn't appear in `/mcp` after restart, run `sverklo doctor`.
+`sverklo init` auto-detects which AI coding agents you have (Claude Code, Cursor, Windsurf, Zed, Antigravity) and writes the right MCP config files. Idempotent — safe to re-run. If sverklo doesn't appear in your agent after restart, run `sverklo doctor`.
 
-### Cursor / Windsurf / VS Code / JetBrains
+**Per-agent config locations** (`sverklo init` writes these for you):
+- Claude Code: `.mcp.json` at project root + appends to `CLAUDE.md` (or `AGENTS.md` if present)
+- Cursor: `.cursor/mcp.json`
+- Windsurf: `~/.windsurf/mcp.json`
+- VS Code: `.vscode/mcp.json`
+- JetBrains: Settings → Tools → MCP Servers
+- Antigravity: `~/.gemini/antigravity/mcp_config.json` (global; re-run `sverklo init` per project)
 
-Use the full binary path (`which sverklo`) to avoid PATH issues in spawned subprocesses:
+For agents we don't auto-detect, drop this in their MCP config:
 
 ```json
 {
@@ -380,19 +404,43 @@ Use the full binary path (`which sverklo`) to avoid PATH issues in spawned subpr
 }
 ```
 
-Config locations: `.cursor/mcp.json`, `~/.windsurf/mcp.json`, `.vscode/mcp.json`, or JetBrains Settings -> Tools -> MCP Servers.
+Use the full binary path (`which sverklo`) — some clients spawn subprocesses without inheriting `$PATH`.
 
-### Antigravity
+</details>
 
-`sverklo init` writes the global config at `~/.gemini/antigravity/mcp_config.json`. Because Antigravity lacks per-project MCP config, you'll need to re-run `sverklo init` from each project or use separate keys (`sverklo-projA`, `sverklo-projB`).
+<details>
+<summary><b>🔧 From source (contributors / custom builds)</b></summary>
+<br/>
 
-### Any MCP client
+```bash
+git clone https://github.com/sverklo/sverklo.git
+cd sverklo
+npm install
+npm run build
+npm link
+sverklo init    # in your project directory
+```
+
+Use this if you're contributing, debugging the indexer, or want to run a not-yet-published build. The `npm link` step makes `sverklo` resolvable globally from the local checkout.
+
+To run the bench:
+```bash
+npm run bench:primitives
+```
+
+Output lands in `benchmark/results/<timestamp>/`.
+
+</details>
+
+### Any MCP client (one-shot via `npx`)
 
 ```bash
 npx sverklo /path/to/your/project
 ```
 
-> **First run:** The ONNX embedding model (~90 MB) downloads automatically. Takes ~30 seconds on first launch, then instant.
+No global install needed. `npx` resolves and runs sverklo on first call. Use this in CI, ephemeral sandboxes, or any host where you don't want a global install.
+
+> **First run note:** The ONNX embedding model (~90 MB) downloads automatically on first launch. Takes ~30 seconds, then every subsequent run is offline-capable.
 
 ---
 
