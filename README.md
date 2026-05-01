@@ -444,6 +444,17 @@ npx sverklo /path/to/your/project
 
 No global install needed. `npx` resolves and runs sverklo on first call. Use this in CI, ephemeral sandboxes, or any host where you don't want a global install.
 
+### Claude Code plugin marketplace
+
+Inside Claude Code:
+
+```
+/plugin marketplace add github:sverklo/sverklo
+/plugin install sverklo-skill@sverklo-marketplace
+```
+
+Installs the bundled Skill (procedural instructions teaching Claude when to reach for `sverklo_search`, `sverklo_impact`, `sverklo_review_diff`, `sverklo_remember`, etc.) without touching your global skills directory.
+
 > **First run note:** The ONNX embedding model (~90 MB) downloads automatically on first launch. Takes ~30 seconds, then every subsequent run is offline-capable.
 
 ---

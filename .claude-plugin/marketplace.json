@@ -1,0 +1,21 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "sverklo-marketplace",
+  "description": "Plugins for sverklo — the local-first code intelligence MCP server",
+  "owner": {
+    "name": "sverklo"
+  },
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "sverklo-skill",
+      "source": "sverklo-skill",
+      "description": "Claude Skill — teaches Claude when to use sverklo's semantic search, blast-radius, diff review, and persistent memory tools",
+      "version": "1.0.0",
+      "keywords": ["code-intelligence", "mcp", "retrieval", "blast-radius", "memory"],
+      "category": "skill"
+    }
+  ]
+}

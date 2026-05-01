@@ -1,0 +1,5 @@
+{
+  "name": "sverklo-skill",
+  "description": "Teaches Claude how to use sverklo's code intelligence MCP tools — semantic search, blast-radius, PR review, codebase audit, persistent memory",
+  "version": "1.0.0"
+}
