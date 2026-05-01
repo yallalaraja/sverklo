@@ -29,6 +29,10 @@
 
 ![Sverklo cuts agent context by 65 % vs grep — bench:primitives, 60 retrieval tasks, peer-reviewable](./docs/hero-token-comparison.png)
 
+[![Watch the 90-second demo: terminal + Claude Code MCP integration](https://i.ytimg.com/vi/OX7aEgdlqhQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=OX7aEgdlqhQ)
+
+> ▶ **[Watch the 90-second demo on YouTube](https://www.youtube.com/watch?v=OX7aEgdlqhQ)** — `sverklo init` → `audit` → 37 MCP tools → live Claude Code integration with blast-radius and symbol-graph traversal.
+
 ![Sverklo demo — audit and badge](./docs/demo.gif)
 
 ## Why
