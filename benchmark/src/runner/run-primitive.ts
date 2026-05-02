@@ -7,6 +7,7 @@ import { score } from "./score.ts";
 import { NaiveGrepBaseline } from "../baselines/naive-grep.ts";
 import { SmartGrepBaseline } from "../baselines/smart-grep.ts";
 import { SverkloBaseline } from "../baselines/sverklo.ts";
+import { JcodemunchBaseline } from "../baselines/jcodemunch.ts";
 import { loadJsonl } from "../ground-truth/schema.ts";
 import { loadManifest } from "../datasets/fetch.ts";
 import { generateExpressTasks } from "../ground-truth/seed/express.gen.ts";
@@ -38,11 +39,19 @@ export async function runAll(): Promise<void> {
     }
   }
 
-  const baselines: Baseline[] = [
+  // Allow filtering baselines via env (BASELINES=jcodemunch,sverklo) so we
+  // can run a single competitor in isolation without re-running the whole
+  // bench. Useful when iterating on a new baseline (e.g. issue #25).
+  const allBaselines: Baseline[] = [
     new NaiveGrepBaseline(),
     new SmartGrepBaseline(),
     new SverkloBaseline(),
+    new JcodemunchBaseline(),
   ];
+  const filter = process.env.BASELINES?.split(",").map((s) => s.trim()).filter(Boolean);
+  const baselines = filter
+    ? allBaselines.filter((b) => filter.includes(b.name))
+    : allBaselines;
 
   const results: RunResult[] = [];
   const rawPath = join(outDir, "raw.jsonl");
