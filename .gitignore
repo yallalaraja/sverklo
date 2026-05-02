@@ -33,3 +33,4 @@ CLAUDE.md
 # Local-only growth/launch kit — Reddit drafts, unsent DMs, internal
 # playbook. Stays on the maintainer's machine; not for the public repo.
 launch-kit/
+.gitnexus

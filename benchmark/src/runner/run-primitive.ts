@@ -8,6 +8,7 @@ import { NaiveGrepBaseline } from "../baselines/naive-grep.ts";
 import { SmartGrepBaseline } from "../baselines/smart-grep.ts";
 import { SverkloBaseline } from "../baselines/sverklo.ts";
 import { JcodemunchBaseline } from "../baselines/jcodemunch.ts";
+import { GitNexusBaseline } from "../baselines/gitnexus.ts";
 import { loadJsonl } from "../ground-truth/schema.ts";
 import { loadManifest } from "../datasets/fetch.ts";
 import { generateExpressTasks } from "../ground-truth/seed/express.gen.ts";
@@ -47,6 +48,7 @@ export async function runAll(): Promise<void> {
     new SmartGrepBaseline(),
     new SverkloBaseline(),
     new JcodemunchBaseline(),
+    new GitNexusBaseline(),
   ];
   const filter = process.env.BASELINES?.split(",").map((s) => s.trim()).filter(Boolean);
   const baselines = filter
