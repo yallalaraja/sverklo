@@ -367,4 +367,113 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return dot; // vectors are already normalized
 }
 
+/**
+ * Per-token embedding for late-interaction reranking (#29).
+ *
+ * Returns one TokenEmbedding per input text, where each TokenEmbedding holds
+ * the L2-normalized per-token hidden states in a flat Float32Array of length
+ * `len * dim`. The flat layout (vs `Float32Array[]`) is intentional: the
+ * MaxSim hot path benchmarks 3-5x faster on a contiguous buffer because V8
+ * inlines the tight `q · d` loop aggressively.
+ *
+ * Padding (attention_mask = 0) and special tokens (CLS at position 0, SEP at
+ * position word-count + 1) are stripped — only "real content" tokens come
+ * back. This matches what ColBERT-style scoring expects: the scoring runs
+ * over genuinely meaningful positions, not padding.
+ *
+ * Returns null when the ONNX runtime is unavailable. Callers (rerank.ts) use
+ * that to silently fall through to pass-through behavior — never throw, the
+ * production retrieval path must not break behind a model load failure.
+ *
+ * Shape contract:
+ *   embedTokens(["hello world"]) → [{ tokens: Float32Array([...]), dim: 384, len: 2 }]
+ *   tokens[t * dim + d] is the d-th component of the t-th token's vector.
+ */
+export interface TokenEmbedding {
+  /** Flat per-token hidden states of length len * dim. L2-normalized per token. */
+  tokens: Float32Array;
+  /** Embedding dimensionality (384 for all-MiniLM-L6-v2). */
+  dim: number;
+  /** Number of real tokens kept (CLS/SEP/padding stripped). */
+  len: number;
+}
+
+export async function embedTokens(texts: string[]): Promise<(TokenEmbedding | null)[]> {
+  if (!session || !ort) {
+    return texts.map(() => null);
+  }
+
+  const out: (TokenEmbedding | null)[] = [];
+  const BATCH = 16;
+
+  for (let b = 0; b < texts.length; b += BATCH) {
+    const batch = texts.slice(b, b + BATCH);
+    const onnxOut = await runOnnxBatch(batch);
+    if (!onnxOut) {
+      // Match embed()'s mid-loop fallback shape: emit nulls for the remaining
+      // texts. Caller decides what to do (rerank.ts treats null as
+      // pass-through-this-candidate).
+      for (let i = 0; i < batch.length; i++) out.push(null);
+      continue;
+    }
+    const { outputData, attentionMasks, batchSize, hiddenSize, seqLen } = onnxOut;
+
+    for (let i = 0; i < batchSize; i++) {
+      const attentionMask = attentionMasks[i];
+
+      // Identify real-content positions: attention_mask == 1, and not the
+      // special tokens (CLS=position 0, SEP=position right after the last
+      // unmasked content token). The tokenize() function in this file
+      // explicitly puts CLS at index 0 and SEP at index `words.length + 1`,
+      // so we strip the leading position and the trailing 1 unmasked one.
+      let totalUnmasked = 0;
+      for (let t = 0; t < seqLen; t++) totalUnmasked += attentionMask[t] || 0;
+      // Real-content count: drop CLS (one position) + SEP (one position).
+      // For very short inputs (e.g. an empty string) totalUnmasked is 2 (just
+      // CLS+SEP), which yields 0 real tokens — return zero-length tensor.
+      const realLen = Math.max(0, totalUnmasked - 2);
+
+      if (realLen === 0) {
+        out.push({ tokens: new Float32Array(0), dim: hiddenSize, len: 0 });
+        continue;
+      }
+
+      const tokens = new Float32Array(realLen * hiddenSize);
+      let written = 0;
+
+      // Skip position 0 (CLS); take the next `realLen` unmasked positions.
+      // SEP appears at position 1 + realLen, so the loop naturally stops
+      // before it (we only write `realLen` tokens).
+      for (let t = 1; t < seqLen && written < realLen; t++) {
+        if (!attentionMask[t]) break;
+        const srcOffset = i * seqLen * hiddenSize + t * hiddenSize;
+        const dstOffset = written * hiddenSize;
+
+        // L2-normalize each token vector. ColBERT-style MaxSim only makes
+        // sense if both query and doc tokens are unit-norm so dot products
+        // map to [-1, 1]; raw hidden states aren't normalized.
+        let norm = 0;
+        for (let d = 0; d < hiddenSize; d++) {
+          const v = outputData[srcOffset + d];
+          norm += v * v;
+        }
+        norm = Math.sqrt(norm);
+        if (norm > 0) {
+          for (let d = 0; d < hiddenSize; d++) {
+            tokens[dstOffset + d] = outputData[srcOffset + d] / norm;
+          }
+        }
+        // (else: leave the all-zero slice; rare, would only happen on a
+        //  degenerate input. Safe — MaxSim against zeros yields zero.)
+
+        written++;
+      }
+
+      out.push({ tokens, dim: hiddenSize, len: realLen });
+    }
+  }
+
+  return out;
+}
+
 export const EMBEDDING_DIM = MODEL_DIM;
