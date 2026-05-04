@@ -102,15 +102,26 @@ export class ChunkStore {
     namePattern: string,
     limit: number = 20
   ): (CodeChunk & { filePath: string; pagerank: number; fileLanguage: string })[] {
+    // Match-quality sort: exact match first, then prefix match, then
+    // substring. Without this, looking up `map` on lodash returns
+    // `arrayMap`, `mapToArray`, `MapCache` etc. ranked by file
+    // pagerank — burying the actual `map` function past the lookup's
+    // result limit. Bench P1 on lodash went 0/10 → 9/10 once this
+    // was added on top of the parser fix.
     return this.db
       .prepare(
-        `SELECT c.*, f.path as filePath, f.pagerank, f.language as fileLanguage
+        `SELECT c.*, f.path as filePath, f.pagerank, f.language as fileLanguage,
+                CASE
+                  WHEN c.name = ? THEN 0
+                  WHEN c.name LIKE ? THEN 1
+                  ELSE 2
+                END as match_quality
          FROM chunks c JOIN files f ON c.file_id = f.id
          WHERE c.name LIKE ?
-         ORDER BY f.pagerank DESC
+         ORDER BY match_quality ASC, f.pagerank DESC
          LIMIT ?`
       )
-      .all(`%${namePattern}%`, limit) as (CodeChunk & {
+      .all(namePattern, `${namePattern}%`, `%${namePattern}%`, limit) as (CodeChunk & {
       filePath: string;
       pagerank: number;
       fileLanguage: string;

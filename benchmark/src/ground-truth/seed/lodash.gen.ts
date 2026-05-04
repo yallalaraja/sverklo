@@ -48,7 +48,11 @@ const P1_DEFINITIONS: { name: string; file: string; line: number }[] = [
   { name: "reduce", file: "lodash.js", line: 9745 },
   { name: "debounce", file: "lodash.js", line: 10372 },
   { name: "throttle", file: "lodash.js", line: 10965 },
-  { name: "merge", file: "lodash.js", line: 16689 },
+  // merge is `var merge = createAssigner(...)` — a function-call assignment,
+  // not a `function name` declaration. Line 13505 is the actual binding site;
+  // line 16689 is the lodash.merge = merge re-export. We point at 13505 to
+  // measure whether baselines find the binding, not the alias.
+  { name: "merge", file: "lodash.js", line: 13505 },
   { name: "cloneDeep", file: "lodash.js", line: 11155 },
   { name: "get", file: "lodash.js", line: 13194 },
   { name: "set", file: "lodash.js", line: 13741 },

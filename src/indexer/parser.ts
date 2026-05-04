@@ -1265,10 +1265,114 @@ function extractChunk(
 }
 
 function findBraceEnd(lines: string[], startIdx: number): number {
+  // String/regex/comment-aware brace counter. Without this, JS files
+  // with `{` or `}` inside string literals (e.g. lodash.js's
+  // `'{\n/* [wrapped with '` template at line 6301) make the depth
+  // counter run away and the chunk swallow the rest of the file.
+  // Tracks: ' " ` strings (with backslash escapes), // line comments,
+  // /* */ block comments, and / regex literals.
   let depth = 0;
   let foundOpen = false;
+  // Persistent state across lines: only block comments and template
+  // strings (backticks) cross line boundaries. ' and " strings + //
+  // line comments + regex literals are line-local.
+  let inBlockComment = false;
+  let inTemplate = false;
   for (let i = startIdx; i < lines.length; i++) {
-    for (const ch of lines[i]) {
+    const line = lines[i];
+    let inLineComment = false;
+    let inSingle = false;
+    let inDouble = false;
+    let inRegex = false;
+    // `prevSig` is the last non-whitespace char before the current
+    // position — used to disambiguate `/` (regex vs division).
+    let prevSig = "(";
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j];
+      const next = line[j + 1] ?? "";
+      // Skip the body of any active suppressor.
+      if (inLineComment) continue;
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          j++;
+        }
+        continue;
+      }
+      if (inTemplate) {
+        if (ch === "\\") {
+          j++;
+          continue;
+        }
+        if (ch === "`") {
+          inTemplate = false;
+        }
+        // Note: ${...} interpolations can contain real braces; we
+        // intentionally don't recurse into them here (rare in
+        // function bodies and over-engineering for this fix).
+        continue;
+      }
+      if (inSingle) {
+        if (ch === "\\") {
+          j++;
+          continue;
+        }
+        if (ch === "'") inSingle = false;
+        continue;
+      }
+      if (inDouble) {
+        if (ch === "\\") {
+          j++;
+          continue;
+        }
+        if (ch === '"') inDouble = false;
+        continue;
+      }
+      if (inRegex) {
+        if (ch === "\\") {
+          j++;
+          continue;
+        }
+        if (ch === "/") inRegex = false;
+        if (ch === "[") {
+          // character class — skip until ]
+          while (j + 1 < line.length && line[j + 1] !== "]") {
+            j++;
+            if (line[j] === "\\") j++;
+          }
+        }
+        continue;
+      }
+      // Not in any string/comment — open one if applicable.
+      if (ch === "/" && next === "/") {
+        inLineComment = true;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        inBlockComment = true;
+        j++;
+        continue;
+      }
+      if (ch === "'") {
+        inSingle = true;
+        continue;
+      }
+      if (ch === '"') {
+        inDouble = true;
+        continue;
+      }
+      if (ch === "`") {
+        inTemplate = true;
+        continue;
+      }
+      // Regex literal: `/` is a regex iff prevSig is one of the chars
+      // that precede expressions (operators, brackets, etc.) — not
+      // an identifier or numeric literal (where `/` means division).
+      if (ch === "/" && /[=,([{!&|?:;+\-*%~^<>]/.test(prevSig)) {
+        inRegex = true;
+        continue;
+      }
+      // Real code char.
       if (ch === "{") {
         depth++;
         foundOpen = true;
@@ -1276,6 +1380,7 @@ function findBraceEnd(lines: string[], startIdx: number): number {
         depth--;
         if (foundOpen && depth === 0) return i;
       }
+      if (!/\s/.test(ch)) prevSig = ch;
     }
   }
   return Math.min(startIdx + 50, lines.length - 1);
