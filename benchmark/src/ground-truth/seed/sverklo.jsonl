@@ -23,8 +23,8 @@
 {"id":"sv-p4-03","category":"P4","dataset":"sverklo","query":"src/indexer/graph-builder.ts","expected":{"kind":"deps","imports":["src/search/pagerank.ts"],"importers":["src/indexer/indexer.ts"]}}
 {"id":"sv-p4-04","category":"P4","dataset":"sverklo","query":"src/storage/chunk-store.ts","expected":{"kind":"deps","imports":[],"importers":["src/indexer/indexer.ts"]}}
 {"id":"sv-p4-05","category":"P4","dataset":"sverklo","query":"src/utils/ignore.ts","expected":{"kind":"deps","imports":[],"importers":["src/indexer/indexer.ts","src/indexer/watcher.ts"]}}
-{"id":"sv-p5-01","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["truncateToTokenBudget"]}}
-{"id":"sv-p5-02","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["mineClaudeCodeChats"]}}
-{"id":"sv-p5-03","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["importGitLog"]}}
-{"id":"sv-p5-04","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["EMBEDDING_DIM"]}}
-{"id":"sv-p5-05","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["DiscoveredFile"]}}
+{"id":"sv-p5-01","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["truncateToTokenBudget","importGitLog","classifyVerify","defaultEdgeKindFor","detectCycles","diffCommandWorks"]}}
+{"id":"sv-p5-02","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["truncateToTokenBudget","importGitLog","classifyVerify","defaultEdgeKindFor","detectCycles","diffCommandWorks"]}}
+{"id":"sv-p5-03","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["truncateToTokenBudget","importGitLog","classifyVerify","defaultEdgeKindFor","detectCycles","diffCommandWorks"]}}
+{"id":"sv-p5-04","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["truncateToTokenBudget","importGitLog","classifyVerify","defaultEdgeKindFor","detectCycles","diffCommandWorks"]}}
+{"id":"sv-p5-05","category":"P5","dataset":"sverklo","query":"","expected":{"kind":"names","names":["truncateToTokenBudget","importGitLog","classifyVerify","defaultEdgeKindFor","detectCycles","diffCommandWorks"]}}
