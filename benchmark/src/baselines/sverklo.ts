@@ -21,6 +21,10 @@ const SVERKLO_BIN = resolve(__dirname, "..", "..", "..", "dist", "bin", "sverklo
  */
 export class SverkloBaseline implements Baseline {
   name = "sverklo";
+  // Issue #29: optional ColBERT/PLAID-style rerank mode for A/B testing.
+  // Set via constructor — leaves the default sverklo baseline unchanged
+  // and registers a separate `sverklo-rerank` instance with the mode set.
+  protected rerankMode: "off" | "poor-man" | "colbert-v2" | "colbert-code" = "off";
   private child: ChildProcessWithoutNullStreams | null = null;
   private nextId = 100;
   private stdoutBuffer = "";
@@ -34,7 +38,12 @@ export class SverkloBaseline implements Baseline {
 
     this.child = spawn("node", [SVERKLO_BIN, d.rootPath], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, SVERKLO_DEBUG: "" },
+      env: {
+        ...process.env,
+        SVERKLO_DEBUG: "",
+        // Pass rerank mode through to the spawned MCP server.
+        SVERKLO_RERANK: this.rerankMode,
+      },
     });
 
     this.child.stdout.on("data", (buf) => this.onStdout(buf));

@@ -9,6 +9,7 @@ import { SmartGrepBaseline } from "../baselines/smart-grep.ts";
 import { SverkloBaseline } from "../baselines/sverklo.ts";
 import { JcodemunchBaseline } from "../baselines/jcodemunch.ts";
 import { GitNexusBaseline } from "../baselines/gitnexus.ts";
+import { SverkloRerankBaseline } from "../baselines/sverklo-rerank.ts";
 import { loadJsonl } from "../ground-truth/schema.ts";
 import { loadManifest } from "../datasets/fetch.ts";
 import { generateExpressTasks } from "../ground-truth/seed/express.gen.ts";
@@ -53,11 +54,16 @@ export async function runAll(): Promise<void> {
     new SverkloBaseline(),
     new JcodemunchBaseline(),
     new GitNexusBaseline(),
+    // Issue #29: A/B test against ColBERT-style rerank. Off by default
+    // in the standard run (so npm run bench:quick output stays comparable
+    // across releases) — opt in with BASELINES=sverklo-rerank.
+    new SverkloRerankBaseline(),
   ];
   const filter = process.env.BASELINES?.split(",").map((s) => s.trim()).filter(Boolean);
   const baselines = filter
     ? allBaselines.filter((b) => filter.includes(b.name))
-    : allBaselines;
+    : // Default run: omit experimental sverklo-rerank from no-filter execution.
+      allBaselines.filter((b) => b.name !== "sverklo-rerank");
 
   const results: RunResult[] = [];
   const rawPath = join(outDir, "raw.jsonl");

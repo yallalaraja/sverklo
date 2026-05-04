@@ -277,7 +277,22 @@ export async function hybridSearch(
   options: SearchOptions
 ): Promise<SearchResult[]> {
   const ranked = await rankCandidates(indexer, options);
-  return packResults(ranked, options.tokenBudget);
+  // Issue #29: optional ColBERT/PLAID-style late-interaction rerank.
+  // No-op when SVERKLO_RERANK is unset (the production default). The
+  // call site is wired now so the experiment branch can drop in real
+  // model integration without re-touching this file.
+  const reranked = await maybeRerank(options.query, ranked);
+  return packResults(reranked, options.tokenBudget);
+}
+
+async function maybeRerank(
+  query: string,
+  candidates: SearchResult[],
+): Promise<SearchResult[]> {
+  const { rerank, rerankerConfigFromEnv } = await import("./rerank.js");
+  const config = rerankerConfigFromEnv();
+  if (config.mode === "off") return candidates;
+  return rerank(query, candidates, config);
 }
 
 /**
