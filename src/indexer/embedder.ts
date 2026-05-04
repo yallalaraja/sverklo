@@ -184,6 +184,97 @@ function fallbackTokenize(text: string): { inputIds: number[]; attentionMask: nu
 
 // ── ONNX Inference ──────────────────────────────────────────────────
 
+/**
+ * Output of one ONNX inference batch — the raw token-level hidden states
+ * before any pooling. Callers choose what to do with it: `embed()` mean-pools
+ * to a single vector per text; `embedTokens()` (#29 rerank work) returns the
+ * per-token states for late-interaction MaxSim scoring.
+ *
+ * Shape contract: `outputData` is the flat [batchSize * seqLen * hiddenSize]
+ * tensor as produced by ONNX Runtime; `outputDims` is its 3-D shape;
+ * `attentionMasks[i]` is the int[] mask that was fed in for row i (kept here
+ * so callers don't have to re-tokenize to know which token positions are
+ * real vs padding). `hiddenSize` and `seqLen` are derived for convenience.
+ */
+interface OnnxBatchResult {
+  outputData: Float32Array;
+  outputDims: readonly number[];
+  attentionMasks: number[][];
+  batchSize: number;
+  hiddenSize: number;
+  seqLen: number;
+}
+
+/**
+ * Run one ONNX inference pass over a batch of texts. Tokenizes, builds the
+ * tensors, calls `session.run`, returns the raw output. Does NOT pool — that's
+ * the caller's job.
+ *
+ * Returns `null` when the session/runtime isn't available (e.g. embedder fell
+ * back to the lightweight path because ONNX failed to load). Callers handle
+ * that case explicitly rather than getting a fake result.
+ */
+async function runOnnxBatch(batch: string[]): Promise<OnnxBatchResult | null> {
+  if (!session || !ort) return null;
+
+  const batchSize = batch.length;
+
+  // Tokenize once, keep attention masks for the caller.
+  const allInputIds = new BigInt64Array(batchSize * MAX_SEQ_LEN);
+  const allAttentionMask = new BigInt64Array(batchSize * MAX_SEQ_LEN);
+  const attentionMasks: number[][] = [];
+
+  for (let i = 0; i < batchSize; i++) {
+    const { inputIds, attentionMask } = tokenize(batch[i]);
+    attentionMasks.push(attentionMask);
+    for (let j = 0; j < MAX_SEQ_LEN; j++) {
+      allInputIds[i * MAX_SEQ_LEN + j] = BigInt(inputIds[j]);
+      allAttentionMask[i * MAX_SEQ_LEN + j] = BigInt(attentionMask[j]);
+    }
+  }
+
+  // Create tensors
+  const inputIdsTensor = new ort.Tensor("int64", allInputIds, [batchSize, MAX_SEQ_LEN]);
+  const attentionMaskTensor = new ort.Tensor("int64", allAttentionMask, [batchSize, MAX_SEQ_LEN]);
+
+  // Also need token_type_ids (all zeros for single-sentence)
+  const tokenTypeIds = new BigInt64Array(batchSize * MAX_SEQ_LEN); // all zeros
+  const tokenTypeTensor = new ort.Tensor("int64", tokenTypeIds, [batchSize, MAX_SEQ_LEN]);
+
+  // Run inference
+  const feeds: Record<string, any> = {
+    input_ids: inputIdsTensor,
+    attention_mask: attentionMaskTensor,
+  };
+
+  // Add token_type_ids if the model expects it
+  if (session.inputNames.includes("token_type_ids")) {
+    feeds.token_type_ids = tokenTypeTensor;
+  }
+
+  const output = await session.run(feeds);
+
+  // Get the output — usually "last_hidden_state" or the first output.
+  // (Issue #29 rerank work depends on this being the per-token hidden states,
+  //  not a pre-pooled `sentence_embedding`. If a future model export ships a
+  //  pre-pooled output we'd silently lose the token-level signal — at that
+  //  point this should explicitly look for `last_hidden_state` first.)
+  const outputName = session.outputNames[0];
+  const outputData = output[outputName].data as Float32Array;
+  const outputDims = output[outputName].dims as readonly number[];
+  const hiddenSize = outputDims[outputDims.length - 1];
+  const seqLen = outputDims.length === 3 ? outputDims[1] : MAX_SEQ_LEN;
+
+  return {
+    outputData,
+    outputDims,
+    attentionMasks,
+    batchSize,
+    hiddenSize,
+    seqLen,
+  };
+}
+
 export async function embed(texts: string[]): Promise<Float32Array[]> {
   if (!session || !ort) {
     return fallbackEmbed(texts);
@@ -195,51 +286,17 @@ export async function embed(texts: string[]): Promise<Float32Array[]> {
   const BATCH = 16;
   for (let b = 0; b < texts.length; b += BATCH) {
     const batch = texts.slice(b, b + BATCH);
-    const batchSize = batch.length;
-
-    // Tokenize batch
-    const allInputIds = new BigInt64Array(batchSize * MAX_SEQ_LEN);
-    const allAttentionMask = new BigInt64Array(batchSize * MAX_SEQ_LEN);
-
-    for (let i = 0; i < batchSize; i++) {
-      const { inputIds, attentionMask } = tokenize(batch[i]);
-      for (let j = 0; j < MAX_SEQ_LEN; j++) {
-        allInputIds[i * MAX_SEQ_LEN + j] = BigInt(inputIds[j]);
-        allAttentionMask[i * MAX_SEQ_LEN + j] = BigInt(attentionMask[j]);
-      }
+    const onnxOut = await runOnnxBatch(batch);
+    if (!onnxOut) {
+      // Session disappeared mid-loop — extremely unlikely, but surface
+      // the same fallback behavior as the top-of-function early return.
+      return fallbackEmbed(texts);
     }
-
-    // Create tensors
-    const inputIdsTensor = new ort.Tensor("int64", allInputIds, [batchSize, MAX_SEQ_LEN]);
-    const attentionMaskTensor = new ort.Tensor("int64", allAttentionMask, [batchSize, MAX_SEQ_LEN]);
-
-    // Also need token_type_ids (all zeros for single-sentence)
-    const tokenTypeIds = new BigInt64Array(batchSize * MAX_SEQ_LEN); // all zeros
-    const tokenTypeTensor = new ort.Tensor("int64", tokenTypeIds, [batchSize, MAX_SEQ_LEN]);
-
-    // Run inference
-    const feeds: Record<string, any> = {
-      input_ids: inputIdsTensor,
-      attention_mask: attentionMaskTensor,
-    };
-
-    // Add token_type_ids if the model expects it
-    if (session.inputNames.includes("token_type_ids")) {
-      feeds.token_type_ids = tokenTypeTensor;
-    }
-
-    const output = await session.run(feeds);
-
-    // Get the output — usually "last_hidden_state" or the first output
-    const outputName = session.outputNames[0];
-    const outputData = output[outputName].data as Float32Array;
-    const outputDims = output[outputName].dims; // [batchSize, seqLen, hiddenSize]
-    const hiddenSize = outputDims[outputDims.length - 1];
-    const seqLen = outputDims.length === 3 ? outputDims[1] : MAX_SEQ_LEN;
+    const { outputData, attentionMasks, batchSize, hiddenSize, seqLen } = onnxOut;
 
     // Mean pooling with attention mask
     for (let i = 0; i < batchSize; i++) {
-      const { attentionMask } = tokenize(batch[i]);
+      const attentionMask = attentionMasks[i];
       const pooled = new Float32Array(hiddenSize);
       let maskSum = 0;
 
