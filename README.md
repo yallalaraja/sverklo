@@ -14,7 +14,7 @@
 
 > **Local-first code intelligence** ◦ No cloud upload ◦ No embedding lottery ◦ Single MCP tool call
 
-**43× fewer input tokens than naive grep**, single tool call vs grep's 7-12 — measured on 90 hand-verified tasks across sverklo, express, and lodash. F1 0.56 overall (leader), 0.73 on definition lookup. [bench:primitives](https://sverklo.com/bench/) is reproducible from a fresh clone with one npm script. [Paper](https://doi.org/10.5281/zenodo.19802051) · [bench:swe](https://sverklo.com/blog/bench-swe-first-results/) — 38/65 perfect recall on 5 OSS repos, **including the runs we lose**.
+**43× fewer input tokens than naive grep**, single tool call vs grep's 7-12 — measured on 90 hand-verified tasks across sverklo, express, and lodash. F1 0.56 overall (leader), 0.73 on definition lookup. [bench:primitives](https://sverklo.com/bench/) is reproducible from a fresh clone with one npm script. Methodology + ground truth lives in its own repo: [sverklo/sverklo-bench](https://github.com/sverklo/sverklo-bench). [Paper](https://doi.org/10.5281/zenodo.19802051) · [bench:swe](https://sverklo.com/blog/bench-swe-first-results/) — 38/65 perfect recall on 5 OSS repos, **including the runs we lose**.
 
 `blind grep` returns 17,000 tokens of regex hits with no ranking, no semantic recall, no call-graph awareness. `embedding lottery` returns chunks ranked by cosine similarity without verifying any of them are load-bearing. Sverklo returns ~470 tokens of ranked, traceable, call-graph-aware results in a single tool call.
 
