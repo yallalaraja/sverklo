@@ -713,10 +713,14 @@ export async function initProject(
   if (!hasBeenNudged()) {
     console.log("");
     console.log(
-      "Telemetry is OFF. To help us prioritize fixes, opt in with:  sverklo telemetry enable"
+      "Telemetry is OFF. We're trying to figure out which MCP clients people actually use"
     );
     console.log(
-      "What gets collected (and what doesn't) is documented at github.com/sverklo/sverklo/blob/main/TELEMETRY.md"
+      "and which tools the agent reaches for first. If you're willing to share that, run:"
+    );
+    console.log("  sverklo telemetry enable");
+    console.log(
+      "Schema + opt-out is at github.com/sverklo/sverklo/blob/main/TELEMETRY.md"
     );
     markNudged();
   }
