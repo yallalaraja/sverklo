@@ -10,9 +10,13 @@
 >
 > Training data is the map. Your codebase is the territory. **Sverklo gives the agent the territory.**
 
-**Sverklo is the open-source, local-first MCP server for code intelligence — the only one with a published benchmark and reproducible eval harness.** It gives Claude Code, Cursor, Windsurf, and Zed a real symbol graph, blast-radius analysis, and git-pinned memory — so your AI coding agent stops hallucinating function names on large repos. MIT-licensed alternative to Greptile and Sourcegraph Cody. Zero config. Your code never leaves the machine.
+**Local-first code intelligence.** Sverklo is the open-source MCP server that gives Claude Code, Cursor, Windsurf, and Zed a real symbol graph, blast-radius analysis, and git-pinned memory — so your AI coding agent stops hallucinating function names on large repos. The only code-intel MCP with a published benchmark and reproducible eval harness. MIT. Zero config. Your code never leaves the machine.
 
-[Paper (Zenodo, CC BY 4.0)](https://doi.org/10.5281/zenodo.19802051) · [bench:primitives](https://sverklo.com/bench/) — **62× fewer tokens than naive grep**, 2.9× fewer than tuned grep, single tool call vs grep's 7-12 (n=60) · [bench:swe](https://sverklo.com/blog/bench-swe-first-results/) — 38/65 perfect recall on 5 OSS repos, including the runs we lose.
+> **Local-first code intelligence** ◦ No cloud upload ◦ No embedding lottery ◦ Single MCP tool call
+
+**43× fewer input tokens than naive grep**, single tool call vs grep's 7-12 — measured on 90 hand-verified tasks across sverklo, express, and lodash. F1 0.56 overall (leader), 0.73 on definition lookup. [bench:primitives](https://sverklo.com/bench/) is reproducible from a fresh clone with one npm script. [Paper](https://doi.org/10.5281/zenodo.19802051) · [bench:swe](https://sverklo.com/blog/bench-swe-first-results/) — 38/65 perfect recall on 5 OSS repos, **including the runs we lose**.
+
+`blind grep` returns 17,000 tokens of regex hits with no ranking, no semantic recall, no call-graph awareness. `embedding lottery` returns chunks ranked by cosine similarity without verifying any of them are load-bearing. Sverklo returns ~470 tokens of ranked, traceable, call-graph-aware results in a single tool call.
 
 ### One-click install
 
@@ -34,6 +38,17 @@
 > ▶ **[Watch the 90-second demo on YouTube](https://www.youtube.com/watch?v=OX7aEgdlqhQ)** — `sverklo init` → `audit` → 37 MCP tools → live Claude Code integration with blast-radius and symbol-graph traversal.
 
 ![Sverklo demo — audit and badge](./docs/demo.gif)
+
+<details open>
+<summary><b>Updates</b></summary>
+
+- **2026-05-04** — [v0.20.2](https://github.com/sverklo/sverklo/releases/tag/v0.20.2): parser brace-counter + lookup exact-match fixes. Lodash P1 0/10 → 9/10. Overall F1 0.45 → 0.56 (now leader on the public bench). [release notes](https://github.com/sverklo/sverklo/releases/tag/v0.20.2)
+- **2026-05-04** — [Bench expanded to 3 datasets, 5 baselines, 90 tasks](https://sverklo.com/bench/). Lodash 4.17.21 added per [#26](https://github.com/sverklo/sverklo/issues/26). sv-p5 ground truth refined per [#27](https://github.com/sverklo/sverklo/issues/27).
+- **2026-05-03** — [v0.20.1](https://github.com/sverklo/sverklo/releases/tag/v0.20.1): `sverklo receipt` ships — token-spend summary parsed from `~/.claude/projects/**/*.jsonl`. [why we built it](https://sverklo.com/blog/14200-tokens-to-find-one-function/)
+- **2026-05-02** — [Bench-as-feedback-loop story](https://sverklo.com/blog/i-added-two-competitors-to-my-own-benchmark/): 5-baseline expansion exposes blind spots on both sides of the bench. [issue #25](https://github.com/sverklo/sverklo/issues/25)
+- **2026-05-01** — [MCP STDIO command-injection audit](https://sverklo.com/blog/mcp-stdio-command-injection-audit/): the class Anthropic won't patch, and the 30-second audit any maintainer can run.
+
+</details>
 
 ## Why
 
