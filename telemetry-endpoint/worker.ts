@@ -82,17 +82,88 @@ interface SanitizedEvent {
 
 // Pageview shape. Deliberately minimal. No cookies, no IP, no UA beyond
 // the short device-class string the client self-reports.
+// Static landing pages we accept verbatim. Subdirectory pages (blog
+// posts, vs/* comparison pages, report/* pages, recipes/*) are matched
+// by the prefix check below — too many to enumerate one-by-one.
 const ALLOWED_PAGES = new Set([
   "/",
   "/playground",
   "/playground/",
   "/blog",
   "/blog/",
+  "/bench",
+  "/bench/",
+  "/benchmarks",
+  "/benchmarks/",
+  "/vs",
+  "/vs/",
+  "/recipes",
+  "/recipes/",
+  "/badge",
+  "/badge/",
+  "/research",
+  "/research/",
+  "/report",
+  "/report/",
+  "/press",
+  "/press/",
+  "/launch-kit",
+  "/launch-kit/",
+  "/docs",
+  "/docs/",
 ]);
+
+const ALLOWED_PAGE_PREFIXES = [
+  "/blog/",      // blog posts
+  "/vs/",        // comparison pages
+  "/report/",    // per-repo audit reports
+  "/recipes/",   // integration recipes
+  "/research/",  // research notes
+];
+
+function isAllowedPage(p: string): boolean {
+  if (typeof p !== "string" || p.length > 256) return false;
+  if (ALLOWED_PAGES.has(p)) return true;
+  for (const prefix of ALLOWED_PAGE_PREFIXES) {
+    if (p.startsWith(prefix) && p.length > prefix.length) return true;
+  }
+  return false;
+}
 
 // Referrer buckets we care about. Anything not matching drops to "other".
 // This shape lets us cheaply tell which launch channel drove traffic
 // without storing arbitrary URLs.
+/**
+ * Capture the referrer URL at host+path granularity for the dashboard.
+ * Preserves enough detail to identify the specific thread/post/tweet
+ * that drove the visit, while stripping query strings (potential
+ * privacy leak — e.g. google.com/search?q=<personal query>) and
+ * fragments. One exception: HN's ?id=N is the public thread ID and
+ * is the only way to identify an HN URL — preserved.
+ *
+ * Returns "" when the input is unparseable or empty.
+ */
+function sanitizeReferrerUrl(raw: string): string {
+  if (!raw) return "";
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return "";
+  }
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  const path = u.pathname || "/";
+  let query = "";
+  if (host === "news.ycombinator.com") {
+    const id = u.searchParams.get("id");
+    if (id && /^\d+$/.test(id) && id.length <= 12) query = "?id=" + id;
+  }
+  // Cap to bound the R2 record size and keep the dashboard table sane.
+  // 256 is generous — most aggregator URLs fit in well under that.
+  const result = host + path + query;
+  return result.length > 256 ? result.slice(0, 256) : result;
+}
+
 function bucketReferrer(raw: string): string {
   if (!raw) return "direct";
   let host = "";
@@ -117,6 +188,15 @@ function bucketReferrer(raw: string): string {
 interface SanitizedPageview {
   page: string;
   referrer_bucket: string;
+  /**
+   * Sanitized referrer URL at host+path granularity. Empty string when
+   * the visitor came direct or the referrer header was unparseable.
+   * Query strings are stripped (privacy: e.g. google.com/search?q=…
+   * could leak personal queries) — except HN's ?id=N which is required
+   * to identify the thread. Older events (pre-2026-05-06) lack this
+   * field; aggregator tolerates absence.
+   */
+  referrer_url: string;
   utm_source: string | null;
   utm_medium: string | null;
   utm_campaign: string | null;
@@ -149,7 +229,7 @@ function classifyTrafficSource(bucket: string): string {
 function isValidPageview(b: unknown): b is Omit<SanitizedPageview, "ts" | "referrer_bucket"> & { referrer?: string } {
   if (!b || typeof b !== "object") return false;
   const r = b as Record<string, unknown>;
-  if (typeof r.page !== "string" || !ALLOWED_PAGES.has(r.page)) return false;
+  if (!isAllowedPage(r.page as string)) return false;
   if (r.referrer !== undefined && typeof r.referrer !== "string") return false;
   if (typeof r.referrer === "string" && r.referrer.length > 2048) return false;
   // utm_* fields: optional strings, short
@@ -577,6 +657,32 @@ footer {
 /* Country bars use the same .bar-row primitives but with their own fill color. */
 .bar-row.country .bar-fill { background: #5BA3F5; }
 .bar-row.source-class .bar-fill { background: #8FB339; }
+
+/* Top referrer URLs — wider name column, clickable link, host highlight. */
+.url-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 50px;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid #1F1C16;
+  font-size: 13px;
+}
+.url-row:last-child { border-bottom: none; }
+.url-row a {
+  color: #C0B9AC;
+  text-decoration: none;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.url-row a:hover { color: #E85A2A; text-decoration: underline; }
+.url-row .host { color: #6B6354; }
+.url-row .bar-track { height: 6px; background: #22201A; border-radius: 3px; overflow: hidden; }
+.url-row .bar-fill { height: 100%; background: #E85A2A; }
+.url-row .count { text-align: right; color: #EDE7D9; font-weight: 600; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -624,6 +730,11 @@ footer {
   <section>
     <h2>by referrer</h2>
     <div id="s-referrer"><span class="empty">loading…</span></div>
+  </section>
+
+  <section>
+    <h2>top external links</h2>
+    <div id="s-referrer-url"><span class="empty">none yet — referrer URLs only captured from 2026-05-06</span></div>
   </section>
 
   <section>
@@ -787,6 +898,38 @@ function renderSourceClass(by_source_class, total) {
   el.innerHTML = '<div class="src-chips">' + html + '</div>' + otherHtml;
 }
 
+function renderReferrerUrls(by_url) {
+  const el = document.getElementById('s-referrer-url');
+  const entries = Object.entries(by_url || {}).sort(function (a, b) { return b[1] - a[1]; });
+  if (entries.length === 0) {
+    el.innerHTML = '<span class="empty">none yet — referrer URLs only captured from 2026-05-06</span>';
+    return;
+  }
+  // Top 20 — going wider gets noisy and the long tail is uninteresting.
+  const top = entries.slice(0, 20);
+  const max = top[0][1];
+  let html = top.map(function (entry) {
+    const url = entry[0];
+    const count = entry[1];
+    const slash = url.indexOf('/');
+    const host = slash >= 0 ? url.slice(0, slash) : url;
+    const path = slash >= 0 ? url.slice(slash) : '';
+    const pct = max === 0 ? 0 : Math.max(2, Math.round((count / max) * 100));
+    const href = 'https://' + url;
+    return '<div class="url-row">' +
+           '<a href="' + escapeHtml(href) + '" target="_blank" rel="noreferrer noopener" title="' + escapeHtml(url) + '">' +
+           '<span class="host">' + escapeHtml(host) + '</span>' + escapeHtml(path) +
+           '</a>' +
+           '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+           '<span class="count">' + count + '</span>' +
+           '</div>';
+  }).join('');
+  if (entries.length > 20) {
+    html += '<p style="font-size:11px;color:#6B6354;margin-top:8px">+' + (entries.length - 20) + ' more URLs in the long tail.</p>';
+  }
+  el.innerHTML = html;
+}
+
 function escapeHtml(s) {
   return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
@@ -809,6 +952,7 @@ function render(data) {
   renderHourly(data.hourly, data.days);
   renderSourceClass(data.by_source_class, data.total);
   renderBars('s-referrer', data.by_referrer, 'referrer');
+  renderReferrerUrls(data.by_referrer_url);
   // Filter "XX" (unknown country) out of by_country if it dominates the
   // map only because of pre-2026-05-06 events. Show it explicitly so
   // the empty-state message stays accurate.
@@ -902,10 +1046,12 @@ async function handlePageview(req: Request, env: Env): Promise<Response> {
     return new Response("Invalid pageview", { status: 400 });
   }
 
-  // Re-bucket the referrer server-side so clients can't smuggle
-  // arbitrary URLs in. We never store the raw referrer string.
+  // Bucket and sanitize the referrer server-side so clients can't
+  // smuggle arbitrary URLs in. We store host+path (no queries except
+  // HN's ?id=N), never the raw referrer string with arbitrary query.
   const rawReferrer = typeof body.referrer === "string" ? body.referrer : "";
   const bucket = bucketReferrer(rawReferrer);
+  const referrer_url = sanitizeReferrerUrl(rawReferrer);
 
   // ISO 3166-1 alpha-2 from Cloudflare's edge geo. We use the header
   // form rather than `req.cf?.country` because the header is set on
@@ -917,6 +1063,7 @@ async function handlePageview(req: Request, env: Env): Promise<Response> {
   const sanitized: SanitizedPageview = {
     page: body.page,
     referrer_bucket: bucket,
+    referrer_url,
     utm_source: body.utm_source ?? null,
     utm_medium: body.utm_medium ?? null,
     utm_campaign: body.utm_campaign ?? null,
@@ -975,6 +1122,13 @@ interface StatsResponse {
    */
   hourly: number[];
   by_referrer: Record<string, number>;
+  /**
+   * Sanitized referrer URLs (host+path, no queries except HN's id) →
+   * count. Empty string represents direct visits (no referrer header)
+   * and is filtered out before rendering. Older events lack this
+   * field; their counts surface only in by_referrer (the bucket map).
+   */
+  by_referrer_url: Record<string, number>;
   by_page: Record<string, number>;
   by_device: Record<string, number>;
   by_utm_source: Record<string, number>;
@@ -1033,6 +1187,7 @@ async function handleStats(
     daily: {},
     hourly: new Array(24).fill(0),
     by_referrer: {},
+    by_referrer_url: {},
     by_page: {},
     by_device: {},
     by_utm_source: {},
@@ -1087,6 +1242,12 @@ async function handleStats(
               if (hour >= 0 && hour < 24) totals.hourly[hour]++;
             }
             bump(totals.by_referrer, data.referrer_bucket);
+            // Only bump by_referrer_url when present (older events
+            // lack the field) and non-empty (empty = direct visit,
+            // already counted via referrer_bucket = "direct").
+            if (typeof data.referrer_url === "string" && data.referrer_url.length > 0) {
+              bump(totals.by_referrer_url, data.referrer_url);
+            }
             bump(totals.by_page, data.page);
             bump(totals.by_device, data.device);
             bump(totals.by_utm_source, data.utm_source);
