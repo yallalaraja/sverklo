@@ -106,6 +106,19 @@ header.chrome {
   color: var(--text);
 }
 .brand::before { content: "▌ "; color: var(--accent); }
+.brand-tag {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 7px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  vertical-align: middle;
+}
 .breadcrumb {
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
@@ -695,7 +708,7 @@ footer.status .spacer { flex: 1; }
 <div class="app">
   <!-- ────────── HEADER ────────── -->
   <header class="chrome">
-    <div class="brand mono">sverklo</div>
+    <div class="brand mono">sverklo<span class="brand-tag">local-first · no network calls</span></div>
     <div class="breadcrumb">
       <span id="bc-project">loading…</span>
       <span class="sep">·</span>
