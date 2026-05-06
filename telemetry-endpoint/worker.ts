@@ -784,7 +784,7 @@ async function fetchStats() {
     const data = await r.json();
     render(data);
   } catch (e) {
-    document.getElementById('sub').innerHTML = '<span style="color:#E5484D">⚠ fetch failed: ' + e + '</span>';
+    document.getElementById('sub').innerHTML = '<span style="color:#E5484D">fetch failed: ' + e + '</span>';
   }
 }
 
@@ -1612,11 +1612,14 @@ section h2 {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.bar-row.client .name { color: #4c8cf7; }
-.bar-row.event .name { color: #b487ff; }
-.bar-row.tool .name { color: #4ade80; }
-.bar-row.version .name { color: #facc15; }
-.bar-row.os .name { color: #f59e0b; }
+/* Categorical bar colors — pulled from sverklo's curated palette,
+   not Tailwind defaults. Same palette as the local dashboard
+   (--info / --accent-dim / --ok / --warn / --text-2). */
+.bar-row.client .name { color: #5BA3F5; }
+.bar-row.event .name { color: #B8441C; }
+.bar-row.tool .name { color: #8FB339; }
+.bar-row.version .name { color: #D4A535; }
+.bar-row.os .name { color: #A39886; }
 .bar-track {
   background: #2A2620;
   border-radius: 3px;
@@ -1628,11 +1631,11 @@ section h2 {
   height: 100%;
   border-radius: 3px;
 }
-.bar-row.client .bar-fill { background: #4c8cf7; }
-.bar-row.event .bar-fill { background: #b487ff; }
-.bar-row.tool .bar-fill { background: #4ade80; }
-.bar-row.version .bar-fill { background: #facc15; }
-.bar-row.os .bar-fill { background: #f59e0b; }
+.bar-row.client .bar-fill { background: #5BA3F5; }
+.bar-row.event .bar-fill { background: #B8441C; }
+.bar-row.tool .bar-fill { background: #8FB339; }
+.bar-row.version .bar-fill { background: #D4A535; }
+.bar-row.os .bar-fill { background: #A39886; }
 .bar-row .count {
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -1825,7 +1828,7 @@ async function fetchStats() {
     const data = await r.json();
     render(data);
   } catch (e) {
-    document.getElementById('sub').innerHTML = '<span style="color:#E5484D">⚠ fetch failed: ' + e + '</span>';
+    document.getElementById('sub').innerHTML = '<span style="color:#E5484D">fetch failed: ' + e + '</span>';
   }
 }
 
