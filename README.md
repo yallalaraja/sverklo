@@ -81,7 +81,7 @@ That's it. `sverklo init` auto-detects your installed AI coding agent (Claude Co
 
 Likely you've seen tools that look adjacent. The honest one-paragraph answers, with detailed comparisons linked.
 
-**…just grep with extra steps?** No, but tuned grep is genuinely competitive on F1. On the [60-task bench](https://sverklo.com/bench/) a tuned grep beats sverklo on F1 by 9 points. Sverklo wins by 62× on input tokens and 7-12× on tool-call count. For an AI agent inside a 200K context window, that's the load-bearing axis. For a human at a terminal, smart grep is fine.
+**…just grep with extra steps?** No, but tuned grep is genuinely competitive on F1. On the [90-task bench](https://sverklo.com/bench/), sverklo leads overall F1 (0.56 vs smart-grep's 0.49) — but smart-grep still wins P2 reference finding outright. Sverklo wins by 43× on input tokens and 4-7× on tool-call count vs naive grep. For an AI agent inside a 200K context window, that's the load-bearing axis. For a human at a terminal, smart grep is fine.
 
 **…just Sourcegraph Cody?** Same retrieval surface (hybrid BM25 + vector + graph), different deployment model and license. Cody is source-available with enterprise per-developer pricing ($9-19/dev/mo); sverklo is MIT and runs on a laptop with no signup. [Full comparison →](https://sverklo.com/vs/sourcegraph-cody/)
 
@@ -365,15 +365,23 @@ Real measurements on real codebases. Reproducible via `npm run bench` ([methodol
 
 ### Retrieval benchmark — bench:primitives
 
-Hybrid retrieval F1 vs grep baselines on a 60-task hand-verified evaluation across two OSS codebases. Public report at **[sverklo.com/bench/](https://sverklo.com/bench/)** — including the slice where sverklo *loses* (P5 dead-code detection, F1 = 0.02).
+Hybrid retrieval F1 vs grep baselines on a 90-task hand-verified evaluation across three OSS codebases (express, lodash, sverklo). Public report at **[sverklo.com/bench/](https://sverklo.com/bench/)** — including every slice where sverklo *loses*. Methodology repo: **[github.com/sverklo/sverklo-bench](https://github.com/sverklo/sverklo-bench)**.
 
-| baseline | F1 | input tokens | tool calls |
-|---|---:|---:|---:|
-| naive-grep | 0.35 | 15,814 | 7.6 |
-| smart-grep (tuned) | 0.67 | 731 | 11.8 |
-| **sverklo** | 0.58 | **255** | **1.0** |
+Latest run (sverklo v0.20.2, May 2026):
 
-A tuned grep beats sverklo on F1. Sverklo wins decisively on token economy (62× fewer than naive grep, 2.9× fewer than tuned grep) and tool-call count, which is the load-bearing axis for AI agents with bounded context windows. Reproduce with `npm run bench:primitives`.
+| baseline | F1 | P1 (def) | P2 (refs) | P4 (deps) | input tokens | tool calls |
+|---|---:|---:|---:|---:|---:|---:|
+| naive-grep | 0.29 | 0.10 | 0.18 | 0.53 | 20,278 | 6.5 |
+| smart-grep (tuned) | 0.49 | 0.43 | **0.40** | 0.59 | 1,220 | 4.9 |
+| **sverklo** | **0.56** | **0.73** | 0.25 | **0.71** | **469** | **1.0** |
+| jcodemunch-mcp | 0.32 | **0.73** | 0.00 | 0.46 | 1,267 | 1.2 |
+| GitNexus | 0.25 | 0.27 | 0.00 | 0.30 | **372** | 1.2 |
+
+Sverklo leads overall F1 (0.56 vs smart-grep's 0.49); ties jcodemunch-mcp on P1 definition lookup; smart-grep still wins P2 reference finding (0.40 vs sverklo's 0.25). Token economy: 43× fewer than naive grep, ~2.6× fewer than smart-grep, single tool call per task vs grep's 4-7.
+
+Reproduce: `npm run bench:quick`. Filter with `BASELINES=sverklo,jcodemunch DATASETS=express npm run bench:quick`.
+
+Submitting a baseline? Open a PR adding `benchmark/src/baselines/<your-tool>.ts` — auto-bench CI runs on the PR (express dataset, ~10 min) and posts a results-table comment back. See [.github/workflows/auto-bench.yml](./.github/workflows/auto-bench.yml).
 
 ---
 
