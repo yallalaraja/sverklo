@@ -467,6 +467,54 @@ footer {
   50% { opacity: 0.3; }
 }
 .empty { color: #6B6354; font-style: italic; font-size: 12px; }
+
+/* Window selector — mirrors /v1/adoption/ui. */
+.window { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.win-btn {
+  background: #16140F;
+  border: 1px solid #2A2620;
+  color: #6B6354;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: color 0.1s, border-color 0.1s;
+}
+.win-btn:hover { color: #C0B9AC; border-color: #4D463A; }
+.win-btn.active { background: #2A1812; border-color: #E85A2A; color: #E85A2A; }
+
+/* Daily trend table — one row per day. */
+.trend-row {
+  display: grid;
+  grid-template-columns: 100px 1fr 60px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #1F1C16;
+  font-size: 13px;
+}
+.trend-row:last-child { border-bottom: none; }
+.trend-row .date { color: #6B6354; font-variant-numeric: tabular-nums; }
+.trend-row .count { text-align: right; color: #C0B9AC; font-variant-numeric: tabular-nums; }
+.trend-row .events-track { background: #2A2620; border-radius: 3px; height: 14px; overflow: hidden; position: relative; }
+.trend-row .events-fill { background: #E85A2A; height: 100%; border-radius: 3px; }
+.trend-row.zero .date, .trend-row.zero .count { color: #4D463A; }
+.trend-header {
+  display: grid;
+  grid-template-columns: 100px 1fr 60px;
+  gap: 12px;
+  padding: 4px 0 8px 0;
+  font-size: 11px;
+  color: #4D463A;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid #2A2620;
+  margin-bottom: 4px;
+}
+.trend-header .count-h { text-align: right; }
 </style>
 </head>
 <body>
@@ -474,9 +522,16 @@ footer {
   <h1>sverklo · launch analytics</h1>
   <div class="sub" id="sub"><span class="dot"></span>connecting…</div>
 
+  <div class="window">
+    <button class="win-btn active" data-days="1" onclick="setWindow(1, this)">today</button>
+    <button class="win-btn" data-days="7" onclick="setWindow(7, this)">7d</button>
+    <button class="win-btn" data-days="14" onclick="setWindow(14, this)">14d</button>
+    <button class="win-btn" data-days="30" onclick="setWindow(30, this)">30d</button>
+  </div>
+
   <div class="hero">
     <div class="metric accent">
-      <div class="label">total today</div>
+      <div class="label" id="lbl-total">total today</div>
       <div class="value" id="m-total">—</div>
     </div>
     <div class="metric">
@@ -488,6 +543,11 @@ footer {
       <div class="value" id="m-refcount">—</div>
     </div>
   </div>
+
+  <section id="trend-section" style="display:none">
+    <h2>daily trend</h2>
+    <div id="s-trend"></div>
+  </section>
 
   <section>
     <h2>by referrer</h2>
@@ -516,11 +576,22 @@ footer {
 </div>
 
 <script>
+let currentDays = 1;
 let lastTotal = null;
+let pollTimer = null;
+
+function setWindow(days, btn) {
+  currentDays = days;
+  document.querySelectorAll('.win-btn').forEach(function (b) { b.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  if (pollTimer) clearInterval(pollTimer);
+  fetchStats();
+  pollTimer = setInterval(fetchStats, 15000);
+}
 
 async function fetchStats() {
   try {
-    const r = await fetch('/v1/stats', { credentials: 'same-origin' });
+    const r = await fetch('/v1/stats?days=' + currentDays, { credentials: 'same-origin' });
     if (!r.ok) throw new Error(r.status);
     const data = await r.json();
     render(data);
@@ -547,18 +618,50 @@ function renderBars(elId, obj, rowClass) {
   }).join('');
 }
 
+function renderTrend(daily) {
+  const section = document.getElementById('trend-section');
+  const dates = Object.keys(daily || {}).sort();
+  if (dates.length <= 1) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  const max = Math.max.apply(null, dates.map(function (d) { return daily[d]; }));
+  const headerHtml =
+    '<div class="trend-header">' +
+    '<span>date</span>' +
+    '<span>pageviews</span>' +
+    '<span class="count-h">count</span>' +
+    '</div>';
+  const rowsHtml = dates.map(function (d) {
+    const v = daily[d];
+    const pct = max === 0 ? 0 : Math.max(0, Math.round((v / max) * 100));
+    const cls = v === 0 ? 'trend-row zero' : 'trend-row';
+    return '<div class="' + cls + '">' +
+           '<span class="date">' + d + '</span>' +
+           '<div class="events-track"><div class="events-fill" style="width:' + pct + '%"></div></div>' +
+           '<span class="count">' + v + '</span>' +
+           '</div>';
+  }).join('');
+  document.getElementById('s-trend').innerHTML = headerHtml + rowsHtml;
+}
+
 function escapeHtml(s) {
   return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 function render(data) {
-  const delta = lastTotal !== null && data.total > lastTotal ? ' +' + (data.total - lastTotal) : '';
   document.getElementById('m-total').textContent = data.total;
   document.getElementById('m-last10').textContent = data.last_10m;
   document.getElementById('m-refcount').textContent = Object.keys(data.by_referrer || {}).length;
-  document.getElementById('sub').innerHTML =
-    '<span class="dot"></span>live · ' + data.date + ' · updated ' + new Date().toLocaleTimeString();
 
+  const totalLabel = data.days === 1 ? 'total today' : 'total · ' + data.days + 'd';
+  document.getElementById('lbl-total').textContent = totalLabel;
+
+  const windowLabel = data.days === 1
+    ? data.to_date
+    : data.from_date + ' → ' + data.to_date + ' (' + data.days + 'd)';
+  document.getElementById('sub').innerHTML =
+    '<span class="dot"></span>live · ' + windowLabel + ' · updated ' + new Date().toLocaleTimeString();
+
+  renderTrend(data.daily);
   renderBars('s-referrer', data.by_referrer, 'referrer');
   renderBars('s-page', data.by_page, 'page');
   renderBars('s-device', data.by_device, 'device');
@@ -568,7 +671,7 @@ function render(data) {
 }
 
 fetchStats();
-setInterval(fetchStats, 15000);
+pollTimer = setInterval(fetchStats, 15000);
 </script>
 </body>
 </html>`;
@@ -695,9 +798,18 @@ async function handlePageview(req: Request, env: Env): Promise<Response> {
 // Or bookmark in a browser tab for one-click refresh during launch.
 
 interface StatsResponse {
+  /** Window covered by the aggregation (in days). Default 1, capped at 30. */
+  days: number;
+  /** Earliest UTC date scanned (inclusive). */
+  from_date: string;
+  /** Latest UTC date scanned (inclusive — usually today). */
+  to_date: string;
+  /** Convenience: most-recent date, mirrors `to_date`. Kept for backwards compat with single-day clients. */
   date: string;
   total: number;
   last_10m: number;
+  /** Per-day series so the dashboard can draw a sparkline / trend table. Keys are UTC dates. */
+  daily: Record<string, number>;
   by_referrer: Record<string, number>;
   by_page: Record<string, number>;
   by_device: Record<string, number>;
@@ -715,14 +827,18 @@ async function handleStats(
     return new Response("Method not allowed", { status: 405 });
   }
 
-  // Edge cache lookup. The cache key is synthetic — we don't use the
-  // real request URL because we want a single canonical entry per
-  // day (different user agents or headers shouldn't split the cache).
-  const cacheKey = new Request(`https://t.sverklo.com/__cache/stats/${todayUtc()}`);
+  // Parse window parameter. Default 1 day. Capped at 30 to bound R2
+  // listing/GET cost. Same pattern as /v1/adoption.
+  const url = new URL(req.url);
+  const rawDays = parseInt(url.searchParams.get("days") || "1", 10);
+  const days = Number.isNaN(rawDays) ? 1 : Math.max(1, Math.min(30, rawDays));
+
+  // Cache key includes window so different ranges don't collide.
+  const cacheKey = new Request(
+    `https://t.sverklo.com/__cache/stats/${todayUtc()}/${days}`
+  );
   const cached = await caches.default.match(cacheKey);
   if (cached) {
-    // Return the cached response with a fresh Access-Control-Allow-Origin
-    // header (not strictly needed, but cheap insurance).
     const body = await cached.text();
     return new Response(body, {
       status: 200,
@@ -735,14 +851,18 @@ async function handleStats(
     });
   }
 
-  // Compute the aggregate. Walk every pageview object under today's
-  // prefix. For a few thousand pageviews/day this is fine; beyond
-  // that we'd want a roll-up counter updated on insert.
-  const prefix = `pageviews/${todayUtc()}/`;
+  // Pageviews live at pageviews/<utcDate>/<uuid>.json. Iterate each
+  // date in the window. Per-day prefix isolation means we can compute
+  // the daily series for free in the same loop.
+  const dates = lastNUtcDates(days);
   const totals: StatsResponse = {
-    date: todayUtc(),
+    days,
+    from_date: dates[0],
+    to_date: dates[dates.length - 1],
+    date: dates[dates.length - 1],
     total: 0,
     last_10m: 0,
+    daily: {},
     by_referrer: {},
     by_page: {},
     by_device: {},
@@ -751,51 +871,56 @@ async function handleStats(
     cache_age_s: 0,
   };
   const cutoff10m = Math.floor(Date.now() / 1000) - 600;
+  for (const d of dates) totals.daily[d] = 0;
 
   const bump = (map: Record<string, number>, key: string | null | undefined) => {
     if (!key) return;
     map[key] = (map[key] || 0) + 1;
   };
 
-  let cursor: string | undefined;
-  try {
-    do {
-      const listing = await env.TELEMETRY_BUCKET.list({
-        prefix,
-        limit: 1000,
-        cursor,
-      });
-      // Parallelize the GET calls in small batches so we don't hit
-      // Worker subrequest limits on huge days.
-      const BATCH = 20;
-      for (let i = 0; i < listing.objects.length; i += BATCH) {
-        const batch = listing.objects.slice(i, i + BATCH);
-        const bodies = await Promise.all(
-          batch.map(async (obj) => {
-            try {
-              const body = await env.TELEMETRY_BUCKET.get(obj.key);
-              if (!body) return null;
-              return JSON.parse(await body.text());
-            } catch {
-              return null;
-            }
-          })
-        );
-        for (const data of bodies) {
-          if (!data || typeof data !== "object") continue;
-          totals.total++;
-          if (typeof data.ts === "number" && data.ts >= cutoff10m) totals.last_10m++;
-          bump(totals.by_referrer, data.referrer_bucket);
-          bump(totals.by_page, data.page);
-          bump(totals.by_device, data.device);
-          bump(totals.by_utm_source, data.utm_source);
+  for (const date of dates) {
+    const prefix = `pageviews/${date}/`;
+    let cursor: string | undefined;
+    try {
+      do {
+        const listing = await env.TELEMETRY_BUCKET.list({
+          prefix,
+          limit: 1000,
+          cursor,
+        });
+        // Parallelize the GET calls in small batches so we don't hit
+        // Worker subrequest limits on huge days.
+        const BATCH = 20;
+        for (let i = 0; i < listing.objects.length; i += BATCH) {
+          const batch = listing.objects.slice(i, i + BATCH);
+          const bodies = await Promise.all(
+            batch.map(async (obj) => {
+              try {
+                const body = await env.TELEMETRY_BUCKET.get(obj.key);
+                if (!body) return null;
+                return JSON.parse(await body.text());
+              } catch {
+                return null;
+              }
+            })
+          );
+          for (const data of bodies) {
+            if (!data || typeof data !== "object") continue;
+            totals.total++;
+            totals.daily[date]++;
+            if (typeof data.ts === "number" && data.ts >= cutoff10m) totals.last_10m++;
+            bump(totals.by_referrer, data.referrer_bucket);
+            bump(totals.by_page, data.page);
+            bump(totals.by_device, data.device);
+            bump(totals.by_utm_source, data.utm_source);
+          }
         }
-      }
-      cursor = listing.truncated ? listing.cursor : undefined;
-    } while (cursor);
-  } catch {
-    // R2 list/get errors should not 500 the endpoint. Return
-    // whatever we managed to aggregate with a partial flag.
+        cursor = listing.truncated ? listing.cursor : undefined;
+      } while (cursor);
+    } catch {
+      // R2 list/get errors should not 500 the endpoint. Return
+      // whatever we managed to aggregate.
+    }
   }
 
   const body = JSON.stringify(totals, null, 2);
