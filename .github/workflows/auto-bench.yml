@@ -1,0 +1,184 @@
+name: auto-bench
+
+# Self-running benchmark on PRs that add or modify a baseline.
+#
+# Filed in response to https://www.reddit.com/r/mcp/comments/1t4n9un —
+# u/d3vilzwrld asked for "run on submit" CI so contributors can validate
+# their own bench numbers before claiming them. Tracking issue:
+# https://github.com/sverklo/sverklo-bench/issues/4
+#
+# Scope (v1):
+#   * Express dataset only (~30 tasks). Lodash + sverklo datasets
+#     are skipped — too slow for free-tier GH Actions runners.
+#   * Always benches sverklo as a reference + whichever baselines
+#     are touched by the PR diff.
+#   * Posts/updates a single PR comment with a results table.
+#
+# Out of scope:
+#   * Full 90-task suite (needs self-hosted runner)
+#   * Cross-PR regression detection (needs baseline DB)
+#   * Auto-merge on green (humans review)
+
+on:
+  pull_request:
+    paths:
+      - "benchmark/src/baselines/**"
+      - "benchmark/src/runner/**"
+      - "benchmark/src/ground-truth/seed/express.gen.ts"
+      - ".github/workflows/auto-bench.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: auto-bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Detect changed baselines
+        id: changed
+        run: |
+          # Diff against the PR base. If the PR touches benchmark/src/baselines/foo.ts,
+          # we want to run BASELINES=foo. Always include sverklo as the reference baseline.
+          BASE="${{ github.event.pull_request.base.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- benchmark/src/baselines/ \
+                    | grep -E '^benchmark/src/baselines/[^/]+\.ts$' \
+                    | grep -v '/base\.ts$' \
+                    | grep -v '\.test\.ts$' \
+                    | sed -E 's|benchmark/src/baselines/||; s|\.ts$||' \
+                    | sort -u | tr '\n' ',' | sed 's/,$//')
+          if [ -z "$CHANGED" ]; then
+            echo "No baseline files changed — running full default set on express dataset."
+            echo "baselines=" >> "$GITHUB_OUTPUT"
+            echo "summary=No baseline files changed; running default baselines on express." >> "$GITHUB_OUTPUT"
+          else
+            # Always include sverklo as the reference unless it's the one being modified.
+            if echo ",$CHANGED," | grep -q ',sverklo,'; then
+              FILTER="$CHANGED"
+            else
+              FILTER="$CHANGED,sverklo"
+            fi
+            echo "baselines=$FILTER" >> "$GITHUB_OUTPUT"
+            echo "summary=Changed baselines: \`$CHANGED\`. Running \`$FILTER\` on express." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run bench (express only, single-baseline filter)
+        env:
+          BASELINES: ${{ steps.changed.outputs.baselines }}
+          DATASETS: express
+        run: |
+          # bench:quick is the published reproducer. With DATASETS=express the
+          # runner skips lodash + sverklo (the latter requires the indexer to
+          # have run, which we skip on CI for budget reasons). With BASELINES
+          # filter the runner skips other baselines.
+          npm run bench:quick
+
+      - name: Locate latest results dir
+        id: results
+        run: |
+          LATEST=$(ls -1dt benchmark/results/*/ | head -1)
+          echo "dir=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "summary=$LATEST/summary.json" >> "$GITHUB_OUTPUT"
+          echo "raw=$LATEST/raw.jsonl" >> "$GITHUB_OUTPUT"
+          ls -la "$LATEST"
+
+      - name: Format results as markdown
+        id: format
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const summary = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const lines = [];
+            lines.push("## auto-bench results");
+            lines.push("");
+            lines.push("Filter: `" + (process.env.BASELINES || "(default)") + "` on express dataset only (~30 tasks).");
+            lines.push("");
+            lines.push("| baseline | n | F1 | P1 (def) | P2 (refs) | P4 (deps) | P5 (dead) | tokens | tools/task |");
+            lines.push("|---|---|---|---|---|---|---|---|---|");
+            const cat = summary.byCategory || {};
+            const cats = ["P1", "P2", "P4", "P5"];
+            for (const [name, row] of Object.entries(summary.byBaseline || {})) {
+              const f1 = (row.avg_f1 ?? 0).toFixed(3);
+              const tok = Math.round(row.avg_input_tokens ?? 0).toLocaleString();
+              const tc = (row.avg_tool_calls ?? 0).toFixed(1);
+              const perCat = cats.map(c => {
+                const v = (cat[c] || {})[name];
+                return v ? v.avg_f1.toFixed(2) : "—";
+              });
+              lines.push(`| **${name}** | ${row.n} | **${f1}** | ${perCat[0]} | ${perCat[1]} | ${perCat[2]} | ${perCat[3]} | ${tok} | ${tc} |`);
+            }
+            lines.push("");
+            lines.push("Reproducible locally: `BASELINES=" + (process.env.BASELINES || "<your-baseline>") + " DATASETS=express npm run bench:quick`.");
+            lines.push("");
+            lines.push("<sub>Full 90-task suite (express + lodash + sverklo) runs locally only — too slow for CI. Methodology: <a href=\"https://github.com/sverklo/sverklo-bench\">sverklo/sverklo-bench</a></sub>");
+            const body = lines.join("\n");
+            // Write to a file for the next step.
+            fs.writeFileSync("/tmp/auto-bench-comment.md", body);
+            console.log(body);
+          ' "${{ steps.results.outputs.summary }}"
+        env:
+          BASELINES: ${{ steps.changed.outputs.baselines }}
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-bench-results-${{ github.event.pull_request.number }}
+          path: ${{ steps.results.outputs.dir }}
+          retention-days: 14
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("node:fs");
+            const body = fs.readFileSync("/tmp/auto-bench-comment.md", "utf8");
+            const marker = "<!-- auto-bench:results -->";
+            const finalBody = marker + "\n" + body;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: finalBody,
+              });
+              core.info(`Updated comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: finalBody,
+              });
+              core.info("Posted new comment");
+            }

@@ -26,7 +26,19 @@ export async function runAll(): Promise<void> {
 
   console.error(`[bench] run ${runId}`);
   console.error(`[bench] resolving datasets`);
-  const datasets: Dataset[] = loadManifest();
+  const allDatasets: Dataset[] = loadManifest();
+
+  // Allow filtering datasets via env (DATASETS=express) so CI can
+  // run a fast subset (single dataset, ~30 tasks) instead of the full
+  // 90-task suite. Used by .github/workflows/auto-bench.yml on PRs
+  // that touch benchmark/src/baselines/**.
+  const datasetFilter = process.env.DATASETS?.split(",").map((s) => s.trim()).filter(Boolean);
+  const datasets = datasetFilter
+    ? allDatasets.filter((d) => datasetFilter.includes(d.name))
+    : allDatasets;
+  if (datasetFilter) {
+    console.error(`[bench] dataset filter: ${datasetFilter.join(",")} (${datasets.length}/${allDatasets.length} matched)`);
+  }
 
   // Build the task list per dataset
   const tasksByDataset = new Map<string, Task[]>();
