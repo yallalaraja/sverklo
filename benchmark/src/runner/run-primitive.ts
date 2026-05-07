@@ -14,6 +14,7 @@ import { loadJsonl } from "../ground-truth/schema.ts";
 import { loadManifest } from "../datasets/fetch.ts";
 import { generateExpressTasks } from "../ground-truth/seed/express.gen.ts";
 import { generateLodashTasks } from "../ground-truth/seed/lodash.gen.ts";
+import { generateRequestsTasks } from "../ground-truth/seed/requests.gen.ts";
 import { writeReport } from "./report.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,6 +55,9 @@ export async function runAll(): Promise<void> {
     } else if (d.name === "lodash") {
       console.error(`[bench] generating lodash ground truth`);
       tasksByDataset.set(d.name, generateLodashTasks(d.rootPath));
+    } else if (d.name === "requests") {
+      console.error(`[bench] generating requests ground truth`);
+      tasksByDataset.set(d.name, generateRequestsTasks(d.rootPath));
     }
   }
 
