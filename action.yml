@@ -1,0 +1,185 @@
+name: "sverklo audit"
+description: "Run sverklo audit against your repo and post the code-intel grade as a PR comment. Local-first analysis (no upload). Surfaces dead code, circular deps, coupling, and security findings."
+author: "Nikita Groshin"
+
+branding:
+  icon: "search"
+  color: "orange"
+
+# Layer 2 of the MCP code-intel index strategy
+# (memory: mcp_index_strategy.md). Per Trend Researcher's Socket.dev
+# pattern: scoring wins when co-located with the install surface, not
+# as a destination site. This Action is opt-in — maintainers add it
+# to their own CI; sverklo never posts uninvited comments.
+#
+# Usage in your workflow:
+#
+#   - uses: sverklo/sverklo@main
+#     with:
+#       # Optional: which dimensions to fail on
+#       fail_on: "F"  # or "D" or "" to never fail
+#       # Optional: post a PR comment (default true)
+#       comment: "true"
+#
+# What it does:
+#   1. npm install -g sverklo (the latest published version)
+#   2. sverklo audit . — runs the full audit locally on your repo
+#   3. Parses the audit JSON output
+#   4. Posts a markdown comment on the PR (idempotent; updates in place)
+#   5. Optionally fails the workflow if any dimension scores below `fail_on`
+#
+# What it does NOT do:
+#   - Send your code anywhere (audit runs entirely on the runner)
+#   - Track usage (no telemetry from the action)
+#   - Block merges by default (the comment is informational)
+
+inputs:
+  fail_on:
+    description: "Fail the workflow if any audit dimension scores at or below this grade (e.g., 'F', 'D'). Empty string disables. Default: empty (never fail)."
+    required: false
+    default: ""
+  comment:
+    description: "Post a PR comment with audit results (true/false). Default: true."
+    required: false
+    default: "true"
+  comment_marker:
+    description: "Marker used to find/update the PR comment idempotently. Default: '<!-- sverklo:audit -->'."
+    required: false
+    default: "<!-- sverklo:audit -->"
+  github_token:
+    description: "GitHub token for posting the PR comment. Defaults to the workflow's GITHUB_TOKEN."
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install sverklo from npm
+      shell: bash
+      run: |
+        # Pin to latest stable. Action authors should bump on major
+        # releases; sverklo maintains backward-compat across minor
+        # versions per the v0.20 release notes.
+        npm install -g sverklo
+        sverklo --version
+
+    - name: Run sverklo audit
+      id: audit
+      shell: bash
+      run: |
+        # Audit runs locally on the runner. No upload, no telemetry.
+        # Output is JSON parseable; we tee to a file for the comment
+        # generator step.
+        cd "$GITHUB_WORKSPACE"
+        if ! sverklo audit . --format json > /tmp/audit.json 2>/tmp/audit.stderr; then
+          echo "::error::sverklo audit failed. stderr:"
+          cat /tmp/audit.stderr
+          exit 1
+        fi
+        # Quick sanity: did we get JSON?
+        if ! node -e "JSON.parse(require('node:fs').readFileSync('/tmp/audit.json','utf8'))" 2>/dev/null; then
+          echo "::error::sverklo audit output is not valid JSON"
+          head -50 /tmp/audit.json
+          exit 1
+        fi
+        echo "audit_json=/tmp/audit.json" >> "$GITHUB_OUTPUT"
+
+    - name: Build comment body
+      id: body
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail_on }}
+        MARKER: ${{ inputs.comment_marker }}
+      run: |
+        node -e '
+          const fs = require("node:fs");
+          const audit = JSON.parse(fs.readFileSync("/tmp/audit.json", "utf8"));
+          const marker = process.env.MARKER || "<!-- sverklo:audit -->";
+          const failOn = process.env.FAIL_ON || "";
+          const overall = audit.grade || audit.overall_grade || "?";
+          const dims = Array.isArray(audit.dimensions) ? audit.dimensions : [];
+
+          const lines = [];
+          lines.push(marker);
+          lines.push("## sverklo audit");
+          lines.push("");
+          lines.push(`**Overall: ${overall}** — ${dimsLabel(dims)}`);
+          lines.push("");
+          if (dims.length) {
+            lines.push("| dimension | grade | detail |");
+            lines.push("|---|---|---|");
+            for (const d of dims) {
+              const detail = (d.detail || "").replace(/\|/g, "\\|").slice(0, 200);
+              lines.push(`| ${d.name || "?"} | **${d.grade || "?"}** | ${detail} |`);
+            }
+            lines.push("");
+          }
+          lines.push("Audit ran locally on the runner — no code was uploaded. Methodology: <https://github.com/sverklo/sverklo>. Compare against the [public MCP code-intel index](https://sverklo.com/mcp/).");
+          lines.push("");
+          lines.push("<sub>Posted by [sverklo/sverklo@main](https://github.com/sverklo/sverklo) GitHub Action.</sub>");
+
+          fs.writeFileSync("/tmp/comment.md", lines.join("\n"));
+          console.log(`::set-output name=overall::${overall}`);
+
+          // fail_on check
+          if (failOn) {
+            const order = ["A","B","C","D","F"];
+            const failIdx = order.indexOf(failOn.toUpperCase());
+            for (const d of dims) {
+              const dIdx = order.indexOf((d.grade || "").toUpperCase());
+              if (failIdx >= 0 && dIdx >= 0 && dIdx >= failIdx) {
+                console.log(`::error::dimension "${d.name}" graded ${d.grade} (fail_on=${failOn})`);
+                fs.writeFileSync("/tmp/should-fail", "1");
+                break;
+              }
+            }
+          }
+
+          function dimsLabel(dims) {
+            const counts = {};
+            for (const d of dims) {
+              const g = (d.grade || "?").toUpperCase();
+              counts[g] = (counts[g] || 0) + 1;
+            }
+            return Object.entries(counts).sort().map(([g,n]) => `${n} × ${g}`).join(", ");
+          }
+        '
+
+    - name: Post PR comment (idempotent)
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github_token }}
+        script: |
+          const fs = require("node:fs");
+          const body = fs.readFileSync("/tmp/comment.md", "utf8");
+          const marker = `${{ inputs.comment_marker }}`;
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            per_page: 100,
+          });
+          const existing = comments.find(c => c.body && c.body.startsWith(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              comment_id: existing.id, body,
+            });
+            core.info(`Updated comment ${existing.id}`);
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body,
+            });
+            core.info("Posted new comment");
+          }
+
+    - name: Fail if requested
+      if: ${{ inputs.fail_on != '' }}
+      shell: bash
+      run: |
+        if [ -f /tmp/should-fail ]; then
+          echo "::error::sverklo audit dimension scored at or below '${{ inputs.fail_on }}'."
+          exit 1
+        fi
