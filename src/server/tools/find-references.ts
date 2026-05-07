@@ -70,23 +70,52 @@ export function handleFindReferences(
   // re-filter every candidate line against the matcher above before
   // we keep it — so the output respects the exact/word-boundary
   // contract even when FTS hands us noise.
-  const ftsResults = indexer.chunkStore.searchFts(symbol, 50);
+  //
+  // Issue #28 (lodash P2 regression): the FTS candidate set used to be
+  // capped at 50. Post-v0.20.2 the parser emits ~2× more chunks per
+  // large file (lodash.js: 238 → 486). Smaller chunks score higher
+  // per-keyword density, so a single file with the symbol scattered
+  // across many chunks (e.g. lodash.js for "filter") could saturate
+  // all 50 slots and evict references in other files (fp/*, test/*,
+  // etc.). Recall on lodash P2 dropped from ~0.50 to ~0.20.
+  //
+  // Two-part fix:
+  //   1. Pull a larger candidate set (500) so file diversity has room.
+  //   2. Cap chunks-per-file at 8 — way more than any single P2 task
+  //      needs, while preventing one file from monopolizing the budget.
+  // Token-budget output cap below still bounds the final size.
+  const FTS_CANDIDATE_LIMIT = 500;
+  const PER_FILE_CHUNK_CAP = 8;
+  const ftsResults = indexer.chunkStore.searchFts(symbol, FTS_CANDIDATE_LIMIT);
 
   const fileCache = new Map<number, FileRecord>();
   for (const f of indexer.fileStore.getAll()) {
     fileCache.set(f.id, f);
   }
 
-  // Group by file
+  // Group by file. Per-file cap enforced as we iterate (FTS returns
+  // chunks in rank order, so the kept chunks are the highest-ranked
+  // for each file).
   const byFile = new Map<string, { line: number; context: string; type: string }[]>();
+  const perFileChunkCount = new Map<number, number>();
 
   for (const chunk of ftsResults) {
     const file = fileCache.get(chunk.file_id);
     if (!file) continue;
 
+    // Per-file cap: if this file has already contributed
+    // PER_FILE_CHUNK_CAP chunks to the candidate set, skip further
+    // chunks from it. The earlier chunks (higher FTS rank) win.
+    const fileCount = perFileChunkCount.get(chunk.file_id) || 0;
+    if (fileCount >= PER_FILE_CHUNK_CAP) continue;
+
     // Early reject: if the symbol doesn't appear in the chunk at all
     // (under the current matching mode), skip the per-line scan.
+    // Note: we still count this against the cap to avoid pathological
+    // cases where every candidate is a false-positive content match.
     if (!matches(chunk.content)) continue;
+
+    perFileChunkCount.set(chunk.file_id, fileCount + 1);
 
     // Find specific lines that actually contain the symbol as a
     // whole word (or substring, if exact=false).

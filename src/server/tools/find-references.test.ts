@@ -113,3 +113,75 @@ describe("handleFindReferences — issue #14 regression", () => {
     expect(out).toContain("No references found");
   });
 });
+
+// Regression test for github.com/sverklo/sverklo/issues/28.
+//
+// When v0.20.2's brace-counter fix landed, the parser started emitting
+// ~2× more chunks per large JS file. find-references' FTS candidate
+// budget (then 50) was small enough that a single file with the symbol
+// scattered across many chunks could saturate the candidate set,
+// evicting references in other files. P2 on lodash dropped F1 ~0.50
+// → ~0.20. Fix: bump FTS budget to 500 + cap chunks-per-file at 8.
+// This test asserts file diversity is preserved when one file has
+// many high-rank chunks containing the target symbol.
+describe("handleFindReferences — issue #28 file diversity", () => {
+  let tmpRoot: string;
+  let indexer: Indexer;
+
+  beforeEach(async () => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "sverklo-refs-diversity-"));
+    mkdirSync(join(tmpRoot, "src"), { recursive: true });
+
+    // Simulate the lodash shape: one "big" file with the symbol
+    // appearing in many small chunks plus several "small" files
+    // with one call site each. Pre-fix: big.ts saturates the
+    // candidate budget, small files vanish from the output.
+    const bigChunks: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      bigChunks.push(`export function fn${i}(x: unknown) {`);
+      bigChunks.push(`  return target(x);`);
+      bigChunks.push(`}`);
+      bigChunks.push("");
+    }
+    writeFileSync(join(tmpRoot, "src", "big.ts"), bigChunks.join("\n"), "utf-8");
+    writeFileSync(
+      join(tmpRoot, "src", "small1.ts"),
+      ["export function caller1() {", "  return target('one');", "}", ""].join("\n"),
+      "utf-8"
+    );
+    writeFileSync(
+      join(tmpRoot, "src", "small2.ts"),
+      ["export function caller2() {", "  return target('two');", "}", ""].join("\n"),
+      "utf-8"
+    );
+    writeFileSync(
+      join(tmpRoot, "src", "small3.ts"),
+      ["export function caller3() {", "  return target('three');", "}", ""].join("\n"),
+      "utf-8"
+    );
+    writeFileSync(
+      join(tmpRoot, "src", "target.ts"),
+      ["export function target(x: unknown): unknown { return x; }", ""].join("\n"),
+      "utf-8"
+    );
+
+    const config = getProjectConfig(tmpRoot);
+    indexer = new Indexer(config);
+    await indexer.index();
+  });
+
+  afterEach(() => {
+    indexer.close();
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("surfaces references from all files, not just the one with the most chunks", () => {
+    const out = handleFindReferences(indexer, { symbol: "target" });
+    // Pre-fix: only big.ts would appear (it dominated FTS candidates).
+    // Post-fix: small1/small2/small3 also surface.
+    expect(out).toContain("small1.ts");
+    expect(out).toContain("small2.ts");
+    expect(out).toContain("small3.ts");
+    expect(out).toContain("big.ts");
+  });
+});
