@@ -47,10 +47,18 @@ import Database from "better-sqlite3";
 //       row in `dependencies` that referenced the file (as source OR
 //       target), and only outgoing edges of the touched file got
 //       restored — incoming edges from cached source files were lost.
-//       Migration clears `dependencies` and resets `files.hash` to ''
-//       so the next index() re-parses every file and rebuilds the graph
-//       from scratch under the corrected upsert. Cost: one re-index.
-export const CURRENT_DATA_VERSION = 9;
+//       v9's migration reset `files.hash = ''` to force re-parse, but
+//       index()'s toIndex check uses `last_modified` (mtime), not hash —
+//       so the migration cleared deps but the no-op "Index is up to
+//       date" branch fired before any re-parse. DBs that landed on v9
+//       are stuck with empty `dependencies` until something on disk
+//       changes mtime. v10 bumps the version and resets last_modified
+//       too so the rebuild actually happens on next index().
+//  10 — Re-run of v9's intent. Same migration body, but also
+//       `UPDATE files SET last_modified = 0` so toIndex sees every
+//       file as stale and the graph actually rebuilds. v9 is treated
+//       as a no-op stepping stone.
+export const CURRENT_DATA_VERSION = 10;
 
 const SCHEMA = `
 -- Indexed files
