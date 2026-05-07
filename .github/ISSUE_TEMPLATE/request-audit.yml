@@ -1,0 +1,67 @@
+name: Request a sverklo audit on your repo
+description: Ask sverklo to run its code-intel audit on your repo and post the results to sverklo.com/report/<owner>/<repo>/. Opt-in only — sverklo never audits uninvited repos.
+title: "[audit] <owner>/<repo>"
+labels: ["audit-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## sverklo audit request
+
+        Sverklo will run its full code-intel audit (dead code, circular deps, coupling, security signals) on your repo and post the result to `sverklo.com/report/<owner>/<repo>/`. The audit runs locally on the maintainer's machine — your code is not uploaded anywhere.
+
+        **Two faster paths**, if you'd rather not file an issue:
+
+        1. **Run it yourself**: `npm install -g sverklo && sverklo audit https://github.com/<owner>/<repo>` produces the same report locally. Methodology + flags: <https://github.com/sverklo/sverklo>.
+        2. **Add the GitHub Action to your CI**: paste the snippet below into `.github/workflows/audit.yml`. Runs on every PR, posts results as a comment, never uploads code.
+           ```yaml
+           - uses: sverklo/sverklo@main
+           ```
+
+        Filing this issue is for the case where you want a **public, persistent audit page** at sverklo.com — the kind that competitors might cite.
+
+  - type: input
+    id: repo
+    attributes:
+      label: Repo URL
+      description: GitHub URL of the repo to audit. Public repos only.
+      placeholder: https://github.com/owner/repo
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category (optional, helps with /mcp/ catalog placement)
+      description: If your repo is an MCP server, we'll consider including it in the next sverklo.com/mcp/ refresh alongside the existing baselines.
+      options:
+        - "(other / general code-intel audit only)"
+        - "MCP server — code-intelligence / retrieval"
+        - "MCP server — security / scanning"
+        - "MCP server — data extraction"
+        - "MCP server — browser / shell automation"
+        - "MCP server — other"
+        - "Code-intel library / framework (not MCP)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything specific you want the audit to flag?
+      description: Optional. The audit runs the full default suite; this is for highlighting concerns the maintainer specifically wants surfaced.
+      placeholder: e.g., "we have known dead-code issues in src/legacy/, want to confirm scope" or "concerned about coupling between modules X and Y"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I am the maintainer, or I have permission from the maintainer to request an audit on this repo.
+          required: true
+        - label: I understand the audit is automated and may surface false positives. The audit page links the methodology so disagreements can be filed as follow-up issues.
+          required: true
+        - label: I'm OK with the audit being publicly visible at sverklo.com/report/.
+          required: true
