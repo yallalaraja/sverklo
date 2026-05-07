@@ -200,7 +200,16 @@ export function startHttpServer(indexer: Indexer, port: number = 3847): void {
           pagerank: r.file.pagerank,
           language: r.file.language,
         })));
-      } else if (url.pathname === "/") {
+      } else if (
+        url.pathname === "/" ||
+        // SPA deep-link fallback: any non-/api path serves the dashboard
+        // shell. The client-side rail navigation owns paths like /audit,
+        // /symbols, /files, /graph, /memories — they used to 404 here,
+        // breaking bookmarks and shared links. /api/* is excluded above
+        // and so still 404s correctly when an unknown API endpoint is
+        // hit. UX audit P1.
+        !url.pathname.startsWith("/api/")
+      ) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(getDashboardHTML());
       } else {
