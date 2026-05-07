@@ -250,6 +250,11 @@ interface Env {
   // Set via: wrangler secret put STATS_PASSWORD
   // Not in code, not in git. Unset = endpoints return 500.
   STATS_PASSWORD?: string;
+  // Bearer token for /v1/index/publish (the MCP code-intel index
+  // POST endpoint used by GitHub Actions on push:main of sverklo/sverklo).
+  // Set via: wrangler secret put INDEX_PUBLISH_TOKEN
+  // Mirrors the GH Actions secret of the same name.
+  INDEX_PUBLISH_TOKEN?: string;
 }
 
 interface R2Object {
@@ -369,6 +374,15 @@ export default {
     const badgeMatch = url.pathname.match(/^\/v1\/badge\/([^/]+)\/([^/]+)\.svg$/);
     if (badgeMatch && req.method === "GET") {
       return handleBadgeSvg(badgeMatch[1], badgeMatch[2], env);
+    }
+    // Route: MCP code-intel index — publish (auth) + read (public).
+    // Stores the merged bench summary at index/latest.json so the
+    // sverklo.com/mcp/ static page can fetch it at build time.
+    if (url.pathname === "/v1/index/publish") {
+      return handleIndexPublish(req, env);
+    }
+    if (url.pathname === "/v1/index.json") {
+      return handleIndexRead(env);
     }
     return new Response("Not found", { status: 404 });
   },
@@ -2087,6 +2101,174 @@ async function handleBadgeSvg(owner: string, repo: string, env: Env): Promise<Re
       "content-type": "image/svg+xml",
       "cache-control": "public, max-age=300",
       "access-control-allow-origin": "*",
+    },
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// MCP code-intel index — POST publish + GET read
+// ────────────────────────────────────────────────────────────────────
+//
+// The "index" is sverklo's public ranking of MCP code-intel servers
+// on the bench's task categories. It's NOT a directory or marketplace
+// (per the four-agent strategy review): it's a single comparison-tool
+// page at sverklo.com/mcp/ backed by this Worker's JSON feed.
+//
+// POST /v1/index/publish — auth via Authorization: Bearer <token>.
+//   Called from .github/workflows/auto-bench.yml on push:main with the
+//   merged summary.json + git SHA. Stores at:
+//     index/<sha>.json     — audit-trail copy
+//     index/latest.json    — pointer the public read uses
+//
+// GET /v1/index.json — public, edge-cached.
+//   sverklo.com/mcp/ fetches at build time. Returns the latest
+//   published bench summary verbatim plus a generated_at timestamp.
+//
+// The /mcp/ page is responsible for merging in audit grades from
+// badges/<owner>/<repo>.json (already produced by `sverklo audit`)
+// — the Worker keeps the two surfaces separate so the schemas are
+// independently auditable.
+
+interface IndexPublishBody {
+  /** Git SHA of the sverklo commit that produced this run. */
+  sha: string;
+  /** ISO timestamp from the bench run dir name (e.g., "2026-05-07T16-51-40-288Z"). */
+  bench_run_id: string;
+  /** Number of tasks per baseline in the run. */
+  task_count: number;
+  /** Dataset names included in the run. */
+  datasets: string[];
+  /** Summary.json's byBaseline shape — opaque to the Worker. */
+  byBaseline: Record<string, {
+    n: number;
+    avg_f1: number;
+    avg_recall: number;
+    avg_precision: number;
+    avg_input_tokens: number;
+    avg_tool_calls: number;
+    avg_wall_ms?: number;
+    [k: string]: unknown;
+  }>;
+  /** Summary.json's byCategory shape. */
+  byCategory: Record<string, Record<string, {
+    n: number;
+    avg_f1: number;
+    [k: string]: unknown;
+  }>>;
+}
+
+function isValidIndexPublish(b: unknown): b is IndexPublishBody {
+  if (!b || typeof b !== "object") return false;
+  const r = b as Record<string, unknown>;
+  if (typeof r.sha !== "string" || !/^[a-f0-9]{7,40}$/i.test(r.sha)) return false;
+  if (typeof r.bench_run_id !== "string" || r.bench_run_id.length > 64) return false;
+  if (typeof r.task_count !== "number" || r.task_count < 1 || r.task_count > 10000) return false;
+  if (!Array.isArray(r.datasets)) return false;
+  if (!r.byBaseline || typeof r.byBaseline !== "object") return false;
+  if (!r.byCategory || typeof r.byCategory !== "object") return false;
+  return true;
+}
+
+async function handleIndexPublish(req: Request, env: Env): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
+  // Bearer-token auth. Token is set as a CF Workers secret AND a
+  // GH Actions secret with matching value. Workflow sends it in the
+  // Authorization header; we constant-time compare to env.
+  const expected = env.INDEX_PUBLISH_TOKEN;
+  if (!expected) {
+    // No token configured = endpoint disabled. Better than silently
+    // accepting anything from anyone.
+    return new Response("Endpoint not configured", { status: 503 });
+  }
+  const auth = req.headers.get("authorization") || "";
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if (!m || m[1] !== expected) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const ct = req.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    return new Response("Unsupported media type", { status: 415 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("Bad request", { status: 400 });
+  }
+
+  if (!isValidIndexPublish(body)) {
+    return new Response("Invalid index payload", { status: 400 });
+  }
+
+  // Augment with server-side metadata. The published artifact is
+  // intentionally close to summary.json so a reader can re-run the
+  // bench and diff numbers byte-for-byte.
+  const augmented = {
+    ...body,
+    published_at: Math.floor(Date.now() / 1000),
+    raw_artifact_url:
+      `https://github.com/sverklo/sverklo/tree/${body.sha}/benchmark/results/${body.bench_run_id}`,
+    reproducer_command:
+      `git clone https://github.com/sverklo/sverklo && cd sverklo && git checkout ${body.sha} && npm install && npm run build && npm run bench:quick`,
+  };
+
+  const json = JSON.stringify(augmented);
+  const auditKey = `index/${body.sha}.json`;
+  const latestKey = `index/latest.json`;
+  try {
+    // Audit-trail copy (immutable per SHA) + pointer (overwritten).
+    await env.TELEMETRY_BUCKET.put(auditKey, json);
+    await env.TELEMETRY_BUCKET.put(latestKey, json);
+  } catch {
+    return new Response("Storage error", { status: 500 });
+  }
+
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      audit_url: `https://t.sverklo.com/v1/index.json?sha=${body.sha}`,
+      latest_url: `https://t.sverklo.com/v1/index.json`,
+    }),
+    {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "access-control-allow-origin": "*",
+      },
+    },
+  );
+}
+
+async function handleIndexRead(env: Env): Promise<Response> {
+  // Read the latest published index. No auth (this is the public feed).
+  // Worker edge cache handles per-deploy load; R2 GET on miss.
+  const obj = await env.TELEMETRY_BUCKET.get("index/latest.json");
+  if (!obj) {
+    return new Response(
+      JSON.stringify({ error: "Index not yet published. Run auto-bench on push:main first." }),
+      {
+        status: 404,
+        headers: {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+        },
+      },
+    );
+  }
+  const body = await obj.text();
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      // 5 min edge cache; static page rebuild picks up new data on
+      // its own deploy cycle anyway.
+      "cache-control": "public, max-age=300",
     },
   });
 }

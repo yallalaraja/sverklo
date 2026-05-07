@@ -1,0 +1,125 @@
+name: bench-refresh
+
+# Manually-triggered full-suite bench run that publishes results to
+# the public MCP code-intel index (sverklo.com/mcp/, backed by
+# t.sverklo.com/v1/index.json).
+#
+# Per the four-agent strategy review (memory: mcp_index_strategy.md):
+#   - Quarterly refresh, fixed cadence — NOT on every push to main
+#   - Sverklo on its own board including losing slices
+#   - Methodology + raw artifacts public; reader can re-run and diff
+#
+# Trigger: GitHub UI → Actions → bench-refresh → Run workflow.
+# Or via gh CLI: `gh workflow run bench-refresh.yml`.
+#
+# This is the ONLY workflow that overwrites index/latest.json on the
+# Worker. The auto-bench PR workflow posts results as a comment but
+# does NOT publish to the index — keeps the public ranking gameable
+# only via discrete maintainer-triggered refreshes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for refresh (will be logged on the published artifact)"
+        required: false
+        default: "quarterly refresh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-refresh
+  # Cancel any in-progress refresh — we only want the latest run to
+  # publish, not race conditions where an old run overwrites a new one.
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # Full 4-dataset × 5-baseline bench takes ~12-20min locally.
+    # GH free runners have 2 cores; budget 30min with margin.
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run full bench (5 baselines × 4 datasets)
+        run: |
+          # The full canonical bench. No BASELINES= or DATASETS= filter.
+          # All defaults: naive-grep, smart-grep, sverklo, jcodemunch, gitnexus.
+          # Datasets: express, lodash, sverklo, requests.
+          npm run bench:quick
+
+      - name: Locate latest results dir
+        id: results
+        run: |
+          LATEST=$(ls -1dt benchmark/results/*/ | head -1 | sed 's:/$::')
+          echo "dir=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "run_id=$(basename $LATEST)" >> "$GITHUB_OUTPUT"
+          echo "summary=$LATEST/summary.json" >> "$GITHUB_OUTPUT"
+
+      - name: Build publish payload
+        id: payload
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const summary = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const sha = process.env.GITHUB_SHA;
+            const runId = process.argv[2];
+            const n = Object.values(summary.byBaseline)[0]?.n || 0;
+            const datasets = ["express", "lodash", "sverklo", "requests"];
+            const payload = {
+              sha,
+              bench_run_id: runId,
+              task_count: n,
+              datasets,
+              byBaseline: summary.byBaseline,
+              byCategory: summary.byCategory,
+            };
+            fs.writeFileSync("/tmp/payload.json", JSON.stringify(payload));
+            console.log(`task_count: ${n}, baselines: ${Object.keys(summary.byBaseline).join(",")}`);
+          ' "${{ steps.results.outputs.summary }}" "${{ steps.results.outputs.run_id }}"
+
+      - name: Publish to index
+        env:
+          INDEX_PUBLISH_TOKEN: ${{ secrets.INDEX_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "$INDEX_PUBLISH_TOKEN" ]; then
+            echo "::error::INDEX_PUBLISH_TOKEN secret not set on this repo. Add via Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          RESPONSE=$(curl -sS -w "\nHTTP_CODE:%{http_code}" \
+            -X POST \
+            -H "content-type: application/json" \
+            -H "authorization: Bearer $INDEX_PUBLISH_TOKEN" \
+            --data @/tmp/payload.json \
+            "https://t.sverklo.com/v1/index/publish")
+          echo "$RESPONSE"
+          CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Index publish failed (HTTP $CODE)"
+            exit 1
+          fi
+          echo "::notice::Published to https://t.sverklo.com/v1/index.json"
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-refresh-${{ github.run_id }}
+          path: ${{ steps.results.outputs.dir }}
+          retention-days: 90
