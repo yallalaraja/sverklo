@@ -393,10 +393,10 @@ export async function startMcpServer(rootPath: string): Promise<void> {
           result = handleOverview(indexer, args || {});
           break;
         case "sverklo_lookup":
-          result = handleLookup(indexer, args || {});
+          result = await handleLookup(indexer, args || {});
           break;
         case "sverklo_refs":
-          result = handleFindReferences(indexer, args || {});
+          result = await handleFindReferences(indexer, args || {});
           break;
         case "sverklo_deps":
           result = handleDependencies(indexer, args || {});
@@ -861,10 +861,10 @@ export async function startGlobalMcpServer(): Promise<void> {
           result = handleOverview(indexer, args || {});
           break;
         case "sverklo_lookup":
-          result = handleLookup(indexer, args || {});
+          result = await handleLookup(indexer, args || {});
           break;
         case "sverklo_refs":
-          result = handleFindReferences(indexer, args || {});
+          result = await handleFindReferences(indexer, args || {});
           break;
         case "sverklo_deps":
           result = handleDependencies(indexer, args || {});

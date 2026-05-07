@@ -68,8 +68,8 @@ describe("handleLookup — issue #15 regression", () => {
 
   // ── Bug A ─────────────────────────────────────────────────────
 
-  it("returns a helpful error when `symbol` is missing (bug A)", () => {
-    const out = handleLookup(indexer, {});
+  it("returns a helpful error when `symbol` is missing (bug A)", async () => {
+    const out = await handleLookup(indexer, {});
     expect(out).toContain("Error");
     expect(out).toContain("symbol");
     // The error should specifically mention the common typo so
@@ -77,27 +77,27 @@ describe("handleLookup — issue #15 regression", () => {
     expect(out).toMatch(/name.*typo|symbol.*not.*name/i);
   });
 
-  it("returns a helpful error when `symbol` is an empty string (bug A)", () => {
-    const out = handleLookup(indexer, { symbol: "" });
+  it("returns a helpful error when `symbol` is an empty string (bug A)", async () => {
+    const out = await handleLookup(indexer, { symbol: "" });
     expect(out).toContain("Error");
   });
 
-  it("returns a helpful error when the wrong parameter name is used (bug A)", () => {
+  it("returns a helpful error when the wrong parameter name is used (bug A)", async () => {
     // Users commonly call this with `name: "Foo"` instead of
     // `symbol: "Foo"`. Before the fix, that silently returned
     // "No results found" — indistinguishable from a real miss.
-    const out = handleLookup(indexer, { name: "Indexer" });
+    const out = await handleLookup(indexer, { name: "Indexer" });
     expect(out).toContain("Error");
     expect(out).toMatch(/name.*typo|symbol.*not.*name/i);
   });
 
   // ── Bug B ─────────────────────────────────────────────────────
 
-  it("surfaces oversize matches as locations, even when smaller matches fit (bug B)", () => {
+  it("surfaces oversize matches as locations, even when smaller matches fit (bug B)", async () => {
     // `Indexer` matches both: the big class (oversized) and the small
     // fakeIndexerWithCore (fits). Before the fix, only the small one
     // was shown and the big one was silently dropped.
-    const out = handleLookup(indexer, { symbol: "Indexer", token_budget: 1200 });
+    const out = await handleLookup(indexer, { symbol: "Indexer", token_budget: 1200 });
 
     // The small match should be visible
     expect(out).toContain("fakeIndexerWithCore");
@@ -110,17 +110,17 @@ describe("handleLookup — issue #15 regression", () => {
     expect(out).toMatch(/too large|exceed|token_budget/i);
   });
 
-  it("surfaces all matches as locations when none fit", () => {
+  it("surfaces all matches as locations when none fit", async () => {
     // With a tiny budget, nothing fits — but we still need the
     // locations list, not "No results found."
-    const out = handleLookup(indexer, { symbol: "Indexer", token_budget: 80 });
+    const out = await handleLookup(indexer, { symbol: "Indexer", token_budget: 80 });
     expect(out).not.toBe("No results found.");
     expect(out).toMatch(/exceed|token_budget|locations only/i);
     expect(out).toContain("indexer.ts");
   });
 
-  it("with a large budget, returns full bodies for both matches", () => {
-    const out = handleLookup(indexer, { symbol: "Indexer", token_budget: 20000 });
+  it("with a large budget, returns full bodies for both matches", async () => {
+    const out = await handleLookup(indexer, { symbol: "Indexer", token_budget: 20000 });
     expect(out).toContain("fakeIndexerWithCore");
     expect(out).toContain("class Indexer");
     // With full bodies rendered, the "too large" warning should not
@@ -128,8 +128,8 @@ describe("handleLookup — issue #15 regression", () => {
     expect(out).not.toMatch(/too large/i);
   });
 
-  it("still returns 'No results found' when the symbol genuinely does not exist", () => {
-    const out = handleLookup(indexer, { symbol: "NonexistentSymbolXYZ" });
+  it("still returns 'No results found' when the symbol genuinely does not exist", async () => {
+    const out = await handleLookup(indexer, { symbol: "NonexistentSymbolXYZ" });
     expect(out).toBe("No results found.");
   });
 });

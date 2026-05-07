@@ -71,8 +71,8 @@ describe("handleFindReferences — issue #14 regression", () => {
     } catch {}
   });
 
-  it("default exact mode matches whole identifiers only", () => {
-    const out = handleFindReferences(indexer, { symbol: "embed" });
+  it("default exact mode matches whole identifiers only", async () => {
+    const out = await handleFindReferences(indexer, { symbol: "embed" });
     // The two real calls to embed() must appear
     expect(out).toContain("await embed(['text'])");
     expect(out).toContain("embed(['another'])");
@@ -83,31 +83,31 @@ describe("handleFindReferences — issue #14 regression", () => {
     expect(out).not.toContain("class EmbeddingStore");
   });
 
-  it("exact: false opts into substring behavior for edge cases", () => {
-    const out = handleFindReferences(indexer, { symbol: "embed", exact: false });
+  it("exact: false opts into substring behavior for edge cases", async () => {
+    const out = await handleFindReferences(indexer, { symbol: "embed", exact: false });
     // In substring mode, the longer names do match
     expect(out).toContain("embeddingStore");
     // And the real calls are still there
     expect(out).toContain("embed(['text'])");
   });
 
-  it("rejects missing symbol with a clear error", () => {
-    const out = handleFindReferences(indexer, {});
+  it("rejects missing symbol with a clear error", async () => {
+    const out = await handleFindReferences(indexer, {});
     expect(out).toContain("Error");
     expect(out).toContain("symbol");
   });
 
-  it("does not match inside longer identifiers that share a prefix", () => {
+  it("does not match inside longer identifiers that share a prefix", async () => {
     // `Embedding` has `embed` as a prefix but should not match
     // in exact mode.
-    const out = handleFindReferences(indexer, { symbol: "embed" });
+    const out = await handleFindReferences(indexer, { symbol: "embed" });
     expect(out).not.toContain("EmbeddingStore");
   });
 
-  it("matches exact identifier even when it contains regex metachars", () => {
+  it("matches exact identifier even when it contains regex metachars", async () => {
     // Names with dots / dollar signs / brackets must not break the
     // regex builder.
-    const out = handleFindReferences(indexer, { symbol: "$invalid" });
+    const out = await handleFindReferences(indexer, { symbol: "$invalid" });
     // Should return "No references" for a non-existent symbol, not
     // throw on regex construction.
     expect(out).toContain("No references found");
@@ -175,8 +175,8 @@ describe("handleFindReferences — issue #28 file diversity", () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it("surfaces references from all files, not just the one with the most chunks", () => {
-    const out = handleFindReferences(indexer, { symbol: "target" });
+  it("surfaces references from all files, not just the one with the most chunks", async () => {
+    const out = await handleFindReferences(indexer, { symbol: "target" });
     // Pre-fix: only big.ts would appear (it dominated FTS candidates).
     // Post-fix: small1/small2/small3 also surface.
     expect(out).toContain("small1.ts");

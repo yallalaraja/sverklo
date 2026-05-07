@@ -1,6 +1,7 @@
 import type { Indexer } from "../../indexer/indexer.js";
-import type { FileRecord } from "../../types/index.js";
+import type { FileRecord, SearchResult, CodeChunk } from "../../types/index.js";
 import { resolveBudget } from "../../utils/budget.js";
+import { rerank, rerankerConfigFromEnv } from "../../search/rerank.js";
 
 export const findReferencesTool = {
   name: "sverklo_refs",
@@ -53,10 +54,10 @@ function buildSymbolMatcher(symbol: string, exact: boolean): (line: string) => b
   return (line: string) => re.test(line);
 }
 
-export function handleFindReferences(
+export async function handleFindReferences(
   indexer: Indexer,
   args: Record<string, unknown>
-): string {
+): Promise<string> {
   const symbol = args.symbol;
   if (typeof symbol !== "string" || symbol.trim() === "") {
     return 'Error: `symbol` is required. Usage: sverklo_refs symbol:"MyClass".';
@@ -98,6 +99,10 @@ export function handleFindReferences(
   // for each file).
   const byFile = new Map<string, { line: number; context: string; type: string }[]>();
   const perFileChunkCount = new Map<number, number>();
+  // Track the highest-ranked chunk per file (the first one we
+  // accept under the matcher). Used as the rerank input below so
+  // file ordering can be reranked by MaxSim instead of PageRank.
+  const firstChunkPerFile = new Map<string, typeof ftsResults[number]>();
 
   for (const chunk of ftsResults) {
     const file = fileCache.get(chunk.file_id);
@@ -116,6 +121,9 @@ export function handleFindReferences(
     if (!matches(chunk.content)) continue;
 
     perFileChunkCount.set(chunk.file_id, fileCount + 1);
+    if (!firstChunkPerFile.has(file.path)) {
+      firstChunkPerFile.set(file.path, chunk);
+    }
 
     // Find specific lines that actually contain the symbol as a
     // whole word (or substring, if exact=false).
@@ -137,12 +145,61 @@ export function handleFindReferences(
   const parts: string[] = [];
   let remaining = tokenBudget;
 
-  // Sort files by PageRank
-  const sortedFiles = [...byFile.entries()].sort((a, b) => {
-    const fileA = [...fileCache.values()].find((f) => f.path === a[0]);
-    const fileB = [...fileCache.values()].find((f) => f.path === b[0]);
-    return (fileB?.pagerank || 0) - (fileA?.pagerank || 0);
-  });
+  // Sort files. Default: by PageRank. With SVERKLO_RERANK set,
+  // run the highest-ranked chunk per file through MaxSim and order
+  // by rerank score instead — keeps file diversity (one chunk per
+  // file maximum, so a chunky file can't monopolize the candidates).
+  // Issue #29 wiring: this is the second of two paths the bench
+  // primitives now exercise (the first is sverklo_lookup).
+  let sortedFiles: [string, { line: number; context: string; type: string }[]][];
+  const refsRerankConfig = rerankerConfigFromEnv();
+  if (refsRerankConfig.mode !== "off" && firstChunkPerFile.size > 1) {
+    const filePaths = [...firstChunkPerFile.keys()];
+    const candidates: SearchResult[] = filePaths.map((path) => {
+      const chunk = firstChunkPerFile.get(path)!;
+      const file = fileCache.get(chunk.file_id);
+      return {
+        chunk: chunk as unknown as CodeChunk,
+        file: file ?? {
+          id: chunk.file_id,
+          path,
+          language: null,
+          hash: "",
+          last_modified: 0,
+          size_bytes: 0,
+          pagerank: 0,
+          indexed_at: 0,
+        },
+        score: 0,
+      };
+    });
+    const reranked = await rerank(symbol, candidates, {
+      ...refsRerankConfig,
+      topK: filePaths.length, // keep all files; we're reordering, not pruning
+      candidatePool: filePaths.length,
+    });
+    // Build path → rerank-score map (sidecar __rerankScore set by rerank()).
+    const scoreByPath = new Map<string, number>();
+    for (const r of reranked) {
+      const sidecar = (r as unknown as { __rerankScore?: number }).__rerankScore;
+      scoreByPath.set(r.file.path, typeof sidecar === "number" ? sidecar : 0);
+    }
+    sortedFiles = [...byFile.entries()].sort((a, b) => {
+      const sa = scoreByPath.get(a[0]) ?? -Infinity;
+      const sb = scoreByPath.get(b[0]) ?? -Infinity;
+      if (sa !== sb) return sb - sa;
+      // Tie-break by PageRank for determinism.
+      const fileA = fileCache.get(firstChunkPerFile.get(a[0])?.file_id ?? -1);
+      const fileB = fileCache.get(firstChunkPerFile.get(b[0])?.file_id ?? -1);
+      return (fileB?.pagerank || 0) - (fileA?.pagerank || 0);
+    });
+  } else {
+    sortedFiles = [...byFile.entries()].sort((a, b) => {
+      const fileA = [...fileCache.values()].find((f) => f.path === a[0]);
+      const fileB = [...fileCache.values()].find((f) => f.path === b[0]);
+      return (fileB?.pagerank || 0) - (fileA?.pagerank || 0);
+    });
+  }
 
   parts.push(`## References to '${symbol}' (${sortedFiles.reduce((s, [, refs]) => s + refs.length, 0)} total)\n`);
 
