@@ -59,13 +59,19 @@ jobs:
       - name: Setup uv (for jcodemunch baseline)
         uses: astral-sh/setup-uv@v4
 
-      # gitnexus baseline runs `npx gitnexus …`. npm covers it via Node
-      # setup, no extra step needed. naive-grep/smart-grep are pure shell.
+      # naive-grep/smart-grep are pure shell; rg is preinstalled on
+      # ubuntu-latest. The other two baselines need explicit installs.
 
       - name: Install + build
         run: |
           npm ci
           npm run build
+
+      # gitnexus baseline checks `which gitnexus` in setupForDataset
+      # and skips silently if missing. Without it the published index
+      # ends up with only 4 of the 5 baselines.
+      - name: Install gitnexus globally (for gitnexus baseline)
+        run: npm install -g gitnexus
 
       - name: Run full bench (5 baselines × 4 datasets)
         run: |
