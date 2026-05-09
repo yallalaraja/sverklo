@@ -1184,8 +1184,24 @@ if (command === "audit") {
   }
 
   if (format === "json") {
-    // Wrap in a simple JSON envelope
-    const json = JSON.stringify({ format: "sverklo-audit", version: "0.4.0", content: mdOutput }, null, 2);
+    // v1.0.0: structured fields. Earlier 0.4.0 emitted only `content`
+    // (markdown), forcing consumers to parse the headline + table — fragile
+    // and broke the published GitHub Action's PR-comment builder until
+    // 2026-05-09. The new shape adds `grade` (overall A–F) and
+    // `dimensions: [{name, grade, score, detail}]` directly from
+    // analyzeCodebase(), so consumers can skip the markdown parser.
+    // `content` is preserved for backwards compatibility — older parsers
+    // still work.
+    const json = JSON.stringify({
+      format: "sverklo-audit",
+      version: "1.0.0",
+      grade: auditAnalysis.healthScore.grade,
+      numeric_score: auditAnalysis.healthScore.numericScore,
+      dimensions: auditAnalysis.healthScore.dimensions,
+      security_issues_count: auditAnalysis.securityIssues.length,
+      circular_deps_count: auditAnalysis.circularDeps.length,
+      content: mdOutput,
+    }, null, 2);
     if (outputPath) {
       const { writeFileSync } = await import("node:fs");
       writeFileSync(outputPath, json);

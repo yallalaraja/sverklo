@@ -72,38 +72,40 @@ jobs:
 
       - name: Build comment body
         run: |
-          # The audit --format json output today is a wrapper:
-          #   { format: "sverklo-audit", version: "0.4.0", content: "<markdown>" }
-          # The markdown content has the headline `Grade: X` and a
-          # `| Dimension | Score | Detail |` table. We parse those
-          # to produce a structured PR comment. When the audit CLI
-          # gains a structured `grade` / `dimensions` JSON output,
-          # this parser becomes unnecessary; tracked at #34.
+          # As of sverklo v0.20.6 (audit format 1.0.0), the JSON emits
+          # structured fields directly. We prefer those and fall back
+          # to parsing the markdown content for older outputs.
           node -e '
             const fs = require("node:fs");
             const audit = JSON.parse(fs.readFileSync("/tmp/audit.json", "utf8"));
             const marker = "<!-- sverklo:audit:self -->";
-            const md = audit.content || "";
 
-            // Extract overall grade from the H1: "# Sverklo Project Audit — Grade: B"
-            const gradeMatch = md.match(/Grade:\s*([A-F])\b/i);
-            const overall = gradeMatch ? gradeMatch[1].toUpperCase() : "?";
+            let overall = "?";
+            let dims = [];
 
-            // Extract dimensions from the markdown table.
-            // Header row + separator row are skipped; we read rows until we
-            // hit a non-table line (blank or non-pipe-prefixed).
-            const dims = [];
-            const lines = md.split("\n");
-            let inTable = false;
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (/^\|\s*Dimension\s*\|/i.test(trimmed)) { inTable = true; continue; }
-              if (inTable && /^\|\s*-+\s*\|/.test(trimmed)) continue; // separator row
-              if (inTable) {
-                if (!trimmed.startsWith("|")) break;
-                const cells = trimmed.split("|").map(c => c.trim()).filter(Boolean);
-                if (cells.length >= 3) {
-                  dims.push({ name: cells[0], grade: cells[1], detail: cells[2] });
+            if (typeof audit.grade === "string" && Array.isArray(audit.dimensions)) {
+              overall = audit.grade.toUpperCase();
+              dims = audit.dimensions.map(d => ({
+                name: d.name || "?",
+                grade: (d.grade || "?").toUpperCase(),
+                detail: d.detail || "",
+              }));
+            } else if (typeof audit.content === "string") {
+              const md = audit.content;
+              const gradeMatch = md.match(/Grade:\s*([A-F])\b/i);
+              overall = gradeMatch ? gradeMatch[1].toUpperCase() : "?";
+              const lines = md.split("\n");
+              let inTable = false;
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (/^\|\s*Dimension\s*\|/i.test(trimmed)) { inTable = true; continue; }
+                if (inTable && /^\|\s*-+\s*\|/.test(trimmed)) continue;
+                if (inTable) {
+                  if (!trimmed.startsWith("|")) break;
+                  const cells = trimmed.split("|").map(c => c.trim()).filter(Boolean);
+                  if (cells.length >= 3) {
+                    dims.push({ name: cells[0], grade: cells[1].toUpperCase(), detail: cells[2] });
+                  }
                 }
               }
             }
