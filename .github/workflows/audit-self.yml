@@ -1,0 +1,172 @@
+name: Self Audit
+
+# Dogfood the sverklo audit Action on every PR. Cannot reuse
+# `uses: sverklo/sverklo@vX` directly because that step starts with
+# `npm install -g sverklo` (the published version), which would grade
+# the new code with the OLD audit logic on PRs that change audit code.
+#
+# This workflow does the same thing — runs `sverklo audit . --format json`
+# and posts an idempotent sticky PR comment — but against the LOCAL build,
+# so changes to audit logic are visible immediately on the PR that ships
+# them. The comment marker (`<!-- sverklo:audit:self -->`) is distinct from
+# the marketplace Action's marker (`<!-- sverklo:audit -->`) so a forked
+# repo with the marketplace Action installed doesn't collide on this one.
+#
+# fail_on is intentionally empty for now — sverklo's own coupling grade
+# is F (indexer.ts fan-in 60) and we'd block every PR until the indexer
+# split lands. Re-enable after that.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: audit-self-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          # Audit reads diff against the base branch; need full enough
+          # history. fetch-depth: 0 is the safe default — sverklo's repo
+          # is small enough that the clone cost is irrelevant.
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install + build (local sverklo)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run sverklo audit on self
+        id: audit
+        run: |
+          # node dist/bin/sverklo.js (local build) instead of `sverklo`
+          # (npm-installed). Same CLI surface, current code.
+          node dist/bin/sverklo.js audit . --format json > /tmp/audit.json 2>/tmp/audit.stderr || {
+            echo "::error::sverklo audit failed. stderr:"
+            cat /tmp/audit.stderr
+            exit 1
+          }
+          # Sanity-check JSON validity before the comment step parses it.
+          if ! node -e "JSON.parse(require('node:fs').readFileSync('/tmp/audit.json','utf8'))" 2>/dev/null; then
+            echo "::error::sverklo audit output is not valid JSON"
+            head -50 /tmp/audit.json
+            exit 1
+          fi
+
+      - name: Build comment body
+        run: |
+          # The audit --format json output today is a wrapper:
+          #   { format: "sverklo-audit", version: "0.4.0", content: "<markdown>" }
+          # The markdown content has the headline `Grade: X` and a
+          # `| Dimension | Score | Detail |` table. We parse those
+          # to produce a structured PR comment. When the audit CLI
+          # gains a structured `grade` / `dimensions` JSON output,
+          # this parser becomes unnecessary; tracked at #34.
+          node -e '
+            const fs = require("node:fs");
+            const audit = JSON.parse(fs.readFileSync("/tmp/audit.json", "utf8"));
+            const marker = "<!-- sverklo:audit:self -->";
+            const md = audit.content || "";
+
+            // Extract overall grade from the H1: "# Sverklo Project Audit — Grade: B"
+            const gradeMatch = md.match(/Grade:\s*([A-F])\b/i);
+            const overall = gradeMatch ? gradeMatch[1].toUpperCase() : "?";
+
+            // Extract dimensions from the markdown table.
+            // Header row + separator row are skipped; we read rows until we
+            // hit a non-table line (blank or non-pipe-prefixed).
+            const dims = [];
+            const lines = md.split("\n");
+            let inTable = false;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (/^\|\s*Dimension\s*\|/i.test(trimmed)) { inTable = true; continue; }
+              if (inTable && /^\|\s*-+\s*\|/.test(trimmed)) continue; // separator row
+              if (inTable) {
+                if (!trimmed.startsWith("|")) break;
+                const cells = trimmed.split("|").map(c => c.trim()).filter(Boolean);
+                if (cells.length >= 3) {
+                  dims.push({ name: cells[0], grade: cells[1], detail: cells[2] });
+                }
+              }
+            }
+
+            const out = [];
+            out.push(marker);
+            out.push("## sverklo audit (dogfood — local build)");
+            out.push("");
+            out.push(`**Overall: ${overall}** — ${dimsLabel(dims)}`);
+            out.push("");
+            if (dims.length) {
+              out.push("| dimension | grade | detail |");
+              out.push("|---|---|---|");
+              for (const d of dims) {
+                const detail = (d.detail || "").replace(/\|/g, "\\|").slice(0, 200);
+                out.push(`| ${d.name || "?"} | **${d.grade || "?"}** | ${detail} |`);
+              }
+              out.push("");
+            }
+            out.push("This grade is from the LOCAL build of this PR — not the published `sverklo/sverklo@main` Action. So changes to audit logic in this PR are visible immediately. Workflow: [.github/workflows/audit-self.yml](https://github.com/sverklo/sverklo/blob/main/.github/workflows/audit-self.yml).");
+            out.push("");
+            out.push("<sub>Compare to the [public MCP code-intel index](https://sverklo.com/mcp/) — sverklo on its own bench scores B overall with an F on coupling (indexer.ts fan-in 60).</sub>");
+
+            fs.writeFileSync("/tmp/comment.md", out.join("\n"));
+
+            function dimsLabel(dims) {
+              const counts = {};
+              for (const d of dims) {
+                const g = (d.grade || "?").toUpperCase();
+                counts[g] = (counts[g] || 0) + 1;
+              }
+              return Object.entries(counts).sort().map(([g,n]) => `${n} × ${g}`).join(", ");
+            }
+          '
+
+      - name: Post sticky PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("node:fs");
+            const body = fs.readFileSync("/tmp/comment.md", "utf8");
+            const marker = "<!-- sverklo:audit:self -->";
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated dogfood comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              core.info("Posted new dogfood comment");
+            }
