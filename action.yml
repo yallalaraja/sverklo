@@ -91,13 +91,43 @@ runs:
         FAIL_ON: ${{ inputs.fail_on }}
         MARKER: ${{ inputs.comment_marker }}
       run: |
+        # The audit `--format json` output is currently a wrapper:
+        #   { format: "sverklo-audit", version: "0.4.0", content: "<markdown>" }
+        # The markdown content has the headline `Grade: X` and a
+        # `| Dimension | Score | Detail |` table. We parse those to
+        # produce the structured PR comment. Earlier versions of this
+        # comment-builder expected `audit.grade` and `audit.dimensions`
+        # directly, which never existed in the actual JSON output and
+        # caused "Overall: ?" with an empty table on every PR. When the
+        # audit CLI gains a structured `grade` / `dimensions` JSON output,
+        # this parser becomes unnecessary.
         node -e '
           const fs = require("node:fs");
           const audit = JSON.parse(fs.readFileSync("/tmp/audit.json", "utf8"));
           const marker = process.env.MARKER || "<!-- sverklo:audit -->";
           const failOn = process.env.FAIL_ON || "";
-          const overall = audit.grade || audit.overall_grade || "?";
-          const dims = Array.isArray(audit.dimensions) ? audit.dimensions : [];
+          const md = audit.content || "";
+
+          // Extract overall grade from the H1: "# Sverklo Project Audit — Grade: B"
+          const gradeMatch = md.match(/Grade:\s*([A-F])\b/i);
+          const overall = gradeMatch ? gradeMatch[1].toUpperCase() : "?";
+
+          // Extract dimensions from the markdown table.
+          const dims = [];
+          const mdLines = md.split("\n");
+          let inTable = false;
+          for (const ml of mdLines) {
+            const t = ml.trim();
+            if (/^\|\s*Dimension\s*\|/i.test(t)) { inTable = true; continue; }
+            if (inTable && /^\|\s*-+\s*\|/.test(t)) continue; // separator row
+            if (inTable) {
+              if (!t.startsWith("|")) break;
+              const cells = t.split("|").map(c => c.trim()).filter(Boolean);
+              if (cells.length >= 3) {
+                dims.push({ name: cells[0], grade: cells[1], detail: cells[2] });
+              }
+            }
+          }
 
           const lines = [];
           lines.push(marker);
