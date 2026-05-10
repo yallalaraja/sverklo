@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseVue, parseSFCBlocks, extractComponentRefs } from "./parser-vue.js";
+import { parseTSJS } from "./parser.js";
 
 describe("parseVue — v0.18.1 hotfix (findings 3, 4, 8, 11)", () => {
   it("Finding 3: merges imports from BOTH <script> and <script setup>", () => {
@@ -13,7 +14,7 @@ import OnlyInSetup from './only-in-setup'
 const x = 1
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const sources = result.imports.map((i) => i.source);
     expect(sources).toContain("./only-in-plain");
     expect(sources).toContain("./only-in-setup");
@@ -28,7 +29,7 @@ export class Helper { greet() { return 'hi' } }
 function inSetup() { return 'setup' }
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const names = result.chunks.map((c) => c.name);
     expect(names).toContain("inSetup");
     // Helper is in the secondary block — symbols not extracted, but
@@ -86,7 +87,7 @@ function inSetup() { return 'setup' }
 const x = 1
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const blockChunks = result.chunks.filter((c) => c.type === "block");
     const blockNames = blockChunks.map((c) => c.name);
     expect(blockNames).toContain("i18n");
@@ -113,7 +114,7 @@ const x = 1
   <CustomElement />
 </template>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const blockChunks = result.chunks.filter((c) => c.type === "block");
     const blockNames = blockChunks.map((c) => c.name);
     expect(blockNames).not.toContain("UserCard");
@@ -133,7 +134,7 @@ import BaseAvatar from './ui/BaseAvatar.vue'
 const u = {}
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const sources = result.imports.map((i) => i.source);
     // Real script imports preserved
     expect(sources).toContain("./UserCard.vue");
@@ -155,7 +156,7 @@ const u = {}
 import { Button } from 'my-ui-lib'
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const sources = result.imports.map((i) => i.source);
     expect(sources).toContain("my-ui-lib");
     expect(sources).not.toContain("./Button");

@@ -1,5 +1,12 @@
 import type { ParsedChunk, ParseResult, ImportRef } from "../types/index.js";
-import { parseTSJS } from "./parser.js";
+
+// Vue SFCs need to parse the <script> block as TS/JS, but a static
+// `import { parseTSJS } from "./parser.js"` creates a cycle (parser.ts
+// dispatches .vue files back to parseVue). The cycle is harmless in
+// ESM (live bindings + function-local use), but static analysis flags
+// it. Inject parseTSJS as a parameter — caller (parser.ts) passes it
+// in. Tests pass parseTSJS imported directly from parser.ts.
+export type ParseTSJSFn = (content: string, lines: string[]) => ParseResult;
 
 // Vue Single File Component (SFC) parser. Issue #21 (alnaggar-dev).
 //
@@ -253,7 +260,11 @@ function extractReactiveSymbols(
   }
 }
 
-export function parseVue(content: string, _lines: string[]): ParseResult {
+export function parseVue(
+  content: string,
+  _lines: string[],
+  parseTSJS: ParseTSJSFn
+): ParseResult {
   const blocks = parseSFCBlocks(content);
   const chunks: ParsedChunk[] = [];
   const imports: ImportRef[] = [];

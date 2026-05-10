@@ -172,6 +172,15 @@ const NON_PRODUCTION_FILE =
   /(^|\/)(tests?|__tests__|spec|specs|examples?|bench|benchmarks?|fixtures?|scripts?|docs?|stories)(\/|$)/;
 const ENV_EXAMPLE_FILE = /\.env\.example$/;
 
+// CLI entrypoints and adjacent CLI-shaped files legitimately use console.log
+// as their UI — that's the whole job. Without this exemption, every CLI tool
+// that runs sverklo audit on itself sees its own bin/cli.ts flagged as
+// "Excessive console.log" (we hit this when running audit on sverklo's own
+// repo: doctor.ts, init.ts, etc.). Cross-language: covers Node bin scripts,
+// Python __main__.py, Go cmd/ trees, and Rust src/main.rs.
+const CLI_FILE =
+  /(^|\/)(bin|cmd|cli)(\/|$)|\b(cli|doctor|init|wakeup|main|index)\.(c|m)?[tj]sx?$|(^|\/)__main__\.py$|(^|\/)main\.(go|rs)$/i;
+
 export function scanSecurity(indexer: Indexer): SecurityIssue[] {
   const allChunks = indexer.chunkStore.getAllWithFile();
   const issues: SecurityIssue[] = [];
@@ -239,8 +248,10 @@ export function scanSecurity(indexer: Indexer): SecurityIssue[] {
         }
       }
 
-      // Track console.log separately (only for non-test files)
-      if (!isTestFile && /console\.log\s*\(/.test(line)) {
+      // Track console.log separately (skip test files AND CLI entrypoints —
+      // CLI tools use console.log as their primary output and triggering on
+      // them was the most-reported audit false-positive).
+      if (!isTestFile && !CLI_FILE.test(filePath) && /console\.log\s*\(/.test(line)) {
         const key = `${filePath}:${absoluteLine}:console.log`;
         if (!seen.has(key)) {
           seen.add(key);

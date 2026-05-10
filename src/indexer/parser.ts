@@ -89,7 +89,7 @@ function parseFileInner(
     case "ocaml":
       return parseOCaml(content, lines);
     case "vue":
-      return parseVue(content, lines);
+      return parseVue(content, lines, parseTSJS);
     case "markdown":
       return parseMarkdown(content, lines);
     case "notebook":

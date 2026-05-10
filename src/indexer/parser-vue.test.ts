@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseVue, parseSFCBlocks, extractComponentRefs } from "./parser-vue.js";
+import { parseTSJS } from "./parser.js";
 
 describe("parseSFCBlocks", () => {
   it("extracts a Composition API SFC with all three blocks", () => {
@@ -139,7 +140,7 @@ const fullName = computed(() => currentUser.value?.name ?? '')
 .user { padding: 1rem; }
 </style>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
 
     // Imports from script
     const importSources = result.imports.map((i) => i.source);
@@ -180,7 +181,7 @@ const a = 1
 function greet() { return 'hi' }
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const greet = result.chunks.find((c) => c.name === "greet");
     expect(greet).toBeDefined();
     // The line `function greet() { ... }` is line 7 in the .vue file
@@ -210,7 +211,7 @@ export class Helper {
 }
 </script>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const importSources = result.imports.map((i) => i.source);
     expect(importSources).toContain("vue");
 
@@ -224,7 +225,7 @@ export class Helper {
   <div>no script here</div>
 </template>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     // Template chunk should still be emitted.
     const names = result.chunks.map((c) => c.name);
     expect(names).toContain("template");
@@ -232,7 +233,7 @@ export class Helper {
 
   it("falls back to a whole-file chunk when no recognizable blocks exist", () => {
     const sfc = `not really a vue file at all`;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     expect(result.chunks).toHaveLength(1);
     expect(result.chunks[0].name).toBe("vue");
     expect(result.chunks[0].content).toBe(sfc);
@@ -255,7 +256,7 @@ const props = defineProps<Props>()
   <button :disabled="props.disabled">click</button>
 </template>
 `;
-    const result = parseVue(sfc, sfc.split("\n"));
+    const result = parseVue(sfc, sfc.split("\n"), parseTSJS);
     const importSources = result.imports.map((i) => i.source);
     expect(importSources).toContain("vue");
     expect(importSources).toContain("./types");
