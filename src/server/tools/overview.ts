@@ -1,4 +1,4 @@
-import type { Indexer } from "../../indexer/indexer.js";
+import type { IndexFiles } from "../../indexer/index-files.js";
 import { formatOverview, type OverviewEntry } from "../../search/token-budget.js";
 import { resolveBudget } from "../../utils/budget.js";
 
@@ -30,7 +30,7 @@ export const overviewTool = {
 };
 
 export function handleOverview(
-  indexer: Indexer,
+  indexer: IndexFiles,
   args: Record<string, unknown>
 ): string {
   const path = args.path as string | undefined;

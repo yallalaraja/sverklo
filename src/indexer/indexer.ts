@@ -37,8 +37,9 @@ import { log, logError } from "../utils/logger.js";
 import { loadSverkloConfig, type SverkloConfig } from "../utils/config-file.js";
 import { track } from "../telemetry/index.js";
 import type { ProjectConfig, ImportRef, IndexStatus } from "../types/index.js";
+import type { IndexFiles } from "./index-files.js";
 
-export class Indexer {
+export class Indexer implements IndexFiles {
   private db: Database.Database;
   public fileStore: FileStore;
   public chunkStore: ChunkStore;
