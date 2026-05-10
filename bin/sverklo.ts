@@ -64,6 +64,7 @@ if (command && command !== "--help" && command !== "-h") {
       benchmark: "Alias for `sverklo bench`.",
       history: "Show audit grade history and trend over time.",
       activity: "Show recent activity log (always-on audit trail).",
+      profile: "Suggest the smallest tool-set profile based on real usage. Sub-actions: suggest [path] [--days N] (default 30) | list. Reads activity.jsonl per project.",
       trace: "Show recent tool call traces (set SVERKLO_TRACE=1).",
       telemetry: "Manage opt-in telemetry (off by default). Subcommands: status, enable, disable.",
       setup: "Download the embedding model (~90MB). With --global: write global MCP config for Claude Code.",
@@ -728,6 +729,165 @@ Usage:
 
 Design doc: https://github.com/sverklo/sverklo/blob/main/TELEMETRY.md
 `);
+  process.exit(0);
+}
+
+if (command === "profile") {
+  // sverklo profile suggest [path] [--days N]
+  // sverklo profile list
+  //
+  // Reads ~/.sverklo/<project-hash>/activity.jsonl, filters tool.call events,
+  // aggregates per-tool counts, and recommends the smallest named profile
+  // (defined in src/server/tool-overrides.ts) that covers ≥95% of the user's
+  // actual tool calls. Suggested in response to MCP discourse around tool-list
+  // bloat (see /blog/we-already-shipped-mcp-code-mode/).
+  const action = args[1] || "suggest";
+  const { PROFILES } = await import("../src/server/tool-overrides.js");
+
+  if (action === "list") {
+    console.log("\n  Sverklo tool profiles\n");
+    console.log("  " + "-".repeat(70));
+    const profileNames = ["core", "nav", "review", "lean", "research"];
+    for (const name of profileNames) {
+      const tools = PROFILES[name];
+      if (!tools) continue;
+      console.log(`  ${name.padEnd(10)} ${String(tools.length).padStart(2)} tools`);
+      console.log(`             ${tools.map((t: string) => t.replace(/^sverklo_/, "")).join(", ")}`);
+      console.log();
+    }
+    console.log("  full        36 tools  (all sverklo_* tools — default)");
+    console.log("\n  Set with: SVERKLO_PROFILE=core sverklo init");
+    console.log("  Or in .sverklo.yaml: profile: core");
+    console.log("  See: https://sverklo.com/blog/we-already-shipped-mcp-code-mode/\n");
+    process.exit(0);
+  }
+
+  if (action !== "suggest") {
+    console.error(`Unknown profile action: ${action}. Use "suggest" or "list".`);
+    process.exit(2);
+  }
+
+  // Optional --days N flag, default 30
+  const daysIdx = args.indexOf("--days");
+  const daysWindow =
+    daysIdx >= 0 && args[daysIdx + 1] ? parseInt(args[daysIdx + 1], 10) || 30 : 30;
+  const projectPath = await resolveProjectPath(args.slice(2));
+
+  const { getAllActivityEntries } = await import("../src/utils/activity-log.js");
+  const entries = getAllActivityEntries(projectPath);
+
+  const cutoffMs = Date.now() - daysWindow * 24 * 60 * 60 * 1000;
+  const calls = entries.filter(
+    (e) => e.event === "tool.call" && e.ts >= cutoffMs && typeof e.detail.tool === "string"
+  );
+
+  if (calls.length === 0) {
+    console.log("\n  No tool calls recorded in the last " + daysWindow + " days for this project.\n");
+    console.log("  Activity is logged automatically when the MCP server handles tool calls.");
+    console.log("  Use sverklo for ~1 week of normal coding sessions, then re-run this.\n");
+    console.log("  In the meantime, the static profiles are listed by:\n");
+    console.log("    sverklo profile list\n");
+    process.exit(0);
+  }
+
+  // Aggregate counts per tool.
+  const counts: Record<string, number> = {};
+  for (const c of calls) {
+    const tool = String(c.detail.tool);
+    counts[tool] = (counts[tool] || 0) + 1;
+  }
+  const total = calls.length;
+  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+
+  console.log(
+    `\n  Sverklo profile suggestion — based on ${total.toLocaleString()} tool calls in the last ${daysWindow} days\n`
+  );
+  console.log("  " + "-".repeat(70));
+  console.log("  tool".padEnd(40) + "calls".padStart(10) + "  share".padStart(10));
+  console.log("  " + "-".repeat(70));
+  for (const [tool, n] of ranked) {
+    const pct = ((n / total) * 100).toFixed(1) + "%";
+    const display = tool.startsWith("sverklo_") ? tool : tool;
+    console.log("  " + display.padEnd(38) + String(n).padStart(10) + pct.padStart(10));
+  }
+  console.log("  " + "-".repeat(70));
+
+  // Compute coverage for every named profile so the user can see the
+  // trade-off, not just a single suggestion. The 95% threshold is the
+  // "safe to switch" line — below that, switching means a small number
+  // of real usage calls fall outside the profile.
+  const profileOrder: string[] = ["core", "nav", "review", "lean", "research"];
+  type ProfileFit = { name: string; size: number; coveragePct: number; missing: string[] };
+  const fits: ProfileFit[] = [];
+  for (const name of profileOrder) {
+    const profileTools = PROFILES[name];
+    if (!profileTools) continue;
+    const profileSet = new Set(profileTools);
+    let covered = 0;
+    const missing: string[] = [];
+    for (const [tool, n] of ranked) {
+      if (profileSet.has(tool)) covered += n;
+      else if (tool.startsWith("sverklo_")) missing.push(tool);
+    }
+    fits.push({ name, size: profileTools.length, coveragePct: covered / total, missing });
+  }
+
+  console.log("\n  Profile coverage on your usage:");
+  console.log("  " + "-".repeat(70));
+  for (const fit of fits) {
+    const pct = (fit.coveragePct * 100).toFixed(1) + "%";
+    const flag = fit.coveragePct >= 0.95 ? " ✓ safe" : fit.coveragePct >= 0.90 ? " ~ close" : "";
+    console.log(
+      `  ${fit.name.padEnd(10)} ${String(fit.size).padStart(2)} tools   covers ${pct.padStart(6)}${flag}`
+    );
+  }
+  console.log("  " + "-".repeat(70));
+
+  const safest = fits.find((f) => f.coveragePct >= 0.95);
+  const closest = [...fits].sort((a, b) => b.coveragePct - a.coveragePct)[0];
+
+  console.log();
+  if (safest) {
+    const pctLabel = (safest.coveragePct * 100).toFixed(1) + "%";
+    console.log(
+      `  Suggested: SVERKLO_PROFILE=${safest.name} (${safest.size} tools, ${pctLabel} coverage)`
+    );
+    console.log(`    Add to your shell: export SVERKLO_PROFILE=${safest.name}`);
+    console.log(`    Or in .sverklo.yaml: profile: ${safest.name}`);
+  } else if (closest && closest.coveragePct >= 0.7) {
+    const pctLabel = (closest.coveragePct * 100).toFixed(1) + "%";
+    console.log(
+      `  Closest match: SVERKLO_PROFILE=${closest.name} (${closest.size} tools, ${pctLabel} coverage)`
+    );
+    if (closest.missing.length > 0) {
+      const top = closest.missing.slice(0, 3);
+      const totalMissingCalls = top.reduce((s, t) => s + (counts[t] || 0), 0);
+      const missingPct = ((totalMissingCalls / total) * 100).toFixed(1) + "%";
+      console.log(
+        `  But you also use ${top.join(", ")} (${missingPct} of calls) which aren't in this profile.`
+      );
+      console.log("  Two paths:");
+      console.log(
+        `    a) Accept the gap — set SVERKLO_PROFILE=${closest.name}; the missing tools won't be exposed.`
+      );
+      console.log(
+        `    b) Custom set — keep full and use SVERKLO_DISABLED_TOOLS=<tools-you-never-call>`
+      );
+      console.log(
+        "       to drop the long-tail. The lowest-count tools above are good candidates."
+      );
+    }
+  } else {
+    console.log(
+      "  Your usage spans tools across multiple named profiles — no single profile fits well."
+    );
+    console.log("  Either keep the default (full) profile, or use SVERKLO_DISABLED_TOOLS to");
+    console.log("  drop the long-tail tools you rarely call.");
+  }
+  console.log(
+    "\n  For host-side lazy-loading (Claude Code Tool Search / Claude API defer_loading),"
+  );
+  console.log("  see https://sverklo.com/recipes/defer-loading/\n");
   process.exit(0);
 }
 

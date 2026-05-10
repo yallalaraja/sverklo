@@ -73,4 +73,28 @@ export function getActivityLog(projectPath: string, limit: number = 30): Activit
   }
 }
 
+/**
+ * Read every activity entry — used by `sverklo profile suggest` to aggregate
+ * tool-call counts across the entire history of the project. Falls back to
+ * empty array if the log is missing or unreadable.
+ */
+export function getAllActivityEntries(projectPath: string): ActivityEntry[] {
+  try {
+    const filePath = activityPath(projectPath);
+    const content = readFileSync(filePath, "utf-8").trim();
+    if (!content) return [];
+    const entries: ActivityEntry[] = [];
+    for (const line of content.split("\n")) {
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // Skip malformed lines
+      }
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
 export { activityPath };

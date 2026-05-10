@@ -57,7 +57,7 @@ let cache: OverrideCache | null = null;
 // Pre-defined profiles. Names match Token Savior's convention.
 // `full` is the implicit default and intentionally absent — when no
 // profile is set we don't filter.
-const PROFILES: Record<string, string[]> = {
+export const PROFILES: Record<string, string[]> = {
   core: [
     // The 5 tools an agent actually reaches for in 80% of code-intel sessions.
     "sverklo_search",
