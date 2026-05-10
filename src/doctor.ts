@@ -636,7 +636,11 @@ export function runDoctor(projectPath: string): void {
   const warned = checks.filter((c) => c.status === "warn").length;
   console.log("");
   if (failed === 0 && warned === 0) {
-    console.log("All checks passed. Restart Claude Code if sverklo isn't already loaded.");
+    // The new tools/list + tools/call probes prove the same path Claude
+    // Code uses end-to-end. Be explicit so users with prior "doctor passed
+    // but it still doesn't work" experiences trust the new signal.
+    console.log("All checks passed — MCP dispatch verified end-to-end.");
+    console.log("If Claude Code was running before init, restart it to pick up the new config.");
   } else if (failed === 0) {
     console.log(`${warned} warning${warned === 1 ? "" : "s"} — sverklo should still work but may not be optimal.`);
   } else {
