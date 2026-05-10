@@ -82,6 +82,7 @@ import { track } from "../telemetry/index.js";
 import { applyToolOverrides } from "./tool-overrides.js";
 import { traceStart } from "../utils/trace.js";
 import { logActivity } from "../utils/activity-log.js";
+import { ToolStatsWriter } from "../utils/tool-stats.js";
 import { pinTool, unpinTool, handlePin, handleUnpin } from "./tools/pin.js";
 
 // Zilliz claude-context compatibility tool definitions.
@@ -155,6 +156,22 @@ export async function startMcpServer(rootPath: string): Promise<void> {
   const config = getProjectConfig(rootPath);
   const indexer = new Indexer(config);
   const hints = new HintEngine();
+
+  // Per-project structured tool-stats. Updated on every tool call, flushed
+  // atomically (tmp+rename) on a 750ms debounce. Used by `sverklo profile
+  // suggest` to derive a recommended profile from real usage. dispose() on
+  // SIGINT / SIGTERM so the last in-memory updates land before exit.
+  const toolStats = new ToolStatsWriter(rootPath);
+  const __disposeToolStats = () => {
+    try {
+      toolStats.dispose();
+    } catch {
+      /* never block shutdown on stats flush */
+    }
+  };
+  process.once("SIGINT", __disposeToolStats);
+  process.once("SIGTERM", __disposeToolStats);
+  process.once("beforeExit", __disposeToolStats);
 
   // Start indexing in background. Tracked in a mutable holder so clear_index
   // can swap in a fresh promise after wiping the database.
@@ -606,6 +623,11 @@ export async function startMcpServer(rootPath: string): Promise<void> {
         tool: name,
         duration_ms: Date.now() - __telemetryStart,
       });
+      toolStats.record({
+        tool: name,
+        durationMs: Date.now() - __telemetryStart,
+        outcome: "ok",
+      });
 
       return {
         content: [{ type: "text", text: result }],
@@ -616,6 +638,12 @@ export async function startMcpServer(rootPath: string): Promise<void> {
       logActivity(rootPath, "tool.error", {
         tool: name,
         error: err instanceof Error ? err.message : String(err),
+      });
+      toolStats.record({
+        tool: name,
+        durationMs: Date.now() - __telemetryStart,
+        outcome: "error",
+        errorCode: err instanceof Error && err.name !== "Error" ? err.name : undefined,
       });
       if (name.startsWith("sverklo_")) {
         void track("tool.call", {

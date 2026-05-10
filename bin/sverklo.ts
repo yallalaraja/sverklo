@@ -773,34 +773,56 @@ if (command === "profile") {
     daysIdx >= 0 && args[daysIdx + 1] ? parseInt(args[daysIdx + 1], 10) || 30 : 30;
   const projectPath = await resolveProjectPath(args.slice(2));
 
-  const { getAllActivityEntries } = await import("../src/utils/activity-log.js");
-  const entries = getAllActivityEntries(projectPath);
+  // Two read paths. New one: structured tool-stats.json (post-v0.20.7
+  // ports of pi-mcp-adapter's atomic-debounced writer). Cumulative
+  // counts since the file was created — fast, no parse loop.
+  // Legacy fallback: activity.jsonl scan with --days N filtering.
+  // We try structured first; fall back if the file doesn't exist.
+  const { readToolStats } = await import("../src/utils/tool-stats.js");
+  const structuredStats = readToolStats(projectPath);
 
-  const cutoffMs = Date.now() - daysWindow * 24 * 60 * 60 * 1000;
-  const calls = entries.filter(
-    (e) => e.event === "tool.call" && e.ts >= cutoffMs && typeof e.detail.tool === "string"
-  );
+  let counts: Record<string, number> = {};
+  let total = 0;
+  let source = "";
 
-  if (calls.length === 0) {
-    console.log("\n  No tool calls recorded in the last " + daysWindow + " days for this project.\n");
-    console.log("  Activity is logged automatically when the MCP server handles tool calls.");
-    console.log("  Use sverklo for ~1 week of normal coding sessions, then re-run this.\n");
-    console.log("  In the meantime, the static profiles are listed by:\n");
-    console.log("    sverklo profile list\n");
-    process.exit(0);
+  if (structuredStats && Object.keys(structuredStats.tools).length > 0) {
+    // Structured doc — use it directly. The --days window doesn't apply
+    // to cumulative stats; we use the full lifetime instead, and tell
+    // the user when the doc started accumulating.
+    for (const [tool, stat] of Object.entries(structuredStats.tools)) {
+      counts[tool] = stat.calls;
+    }
+    total = structuredStats.totalCalls;
+    const sinceStr = new Date(structuredStats.startedAt).toISOString().slice(0, 10);
+    source = `tool-stats.json (cumulative since ${sinceStr})`;
+  } else {
+    // Legacy path: scan activity.jsonl with --days filter.
+    const { getAllActivityEntries } = await import("../src/utils/activity-log.js");
+    const entries = getAllActivityEntries(projectPath);
+    const cutoffMs = Date.now() - daysWindow * 24 * 60 * 60 * 1000;
+    const calls = entries.filter(
+      (e) => e.event === "tool.call" && e.ts >= cutoffMs && typeof e.detail.tool === "string"
+    );
+    if (calls.length === 0) {
+      console.log("\n  No tool calls recorded for this project yet.\n");
+      console.log("  Tool-call telemetry is captured automatically when the MCP server handles tool calls.");
+      console.log("  Use sverklo for ~1 week of normal coding sessions, then re-run this.\n");
+      console.log("  Static profiles are listed by:\n");
+      console.log("    sverklo profile list\n");
+      process.exit(0);
+    }
+    for (const c of calls) {
+      const tool = String(c.detail.tool);
+      counts[tool] = (counts[tool] || 0) + 1;
+    }
+    total = calls.length;
+    source = `activity.jsonl (last ${daysWindow} days)`;
   }
 
-  // Aggregate counts per tool.
-  const counts: Record<string, number> = {};
-  for (const c of calls) {
-    const tool = String(c.detail.tool);
-    counts[tool] = (counts[tool] || 0) + 1;
-  }
-  const total = calls.length;
   const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 
   console.log(
-    `\n  Sverklo profile suggestion — based on ${total.toLocaleString()} tool calls in the last ${daysWindow} days\n`
+    `\n  Sverklo profile suggestion — based on ${total.toLocaleString()} tool calls\n  Source: ${source}\n`
   );
   console.log("  " + "-".repeat(70));
   console.log("  tool".padEnd(40) + "calls".padStart(10) + "  share".padStart(10));
