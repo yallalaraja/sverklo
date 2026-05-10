@@ -16,35 +16,43 @@ const __dirname = dirname(__filename);
 export const SVERKLO_SNIPPET = `
 ## Sverklo — Code Intelligence
 
-Sverklo is a sharper tool for specific kinds of work. Use it where it fits, not as a blanket replacement for Grep/Read.
+This project has the sverklo MCP server installed. Sverklo is a code-intelligence index: ranked search, dependency graph, persistent memory. Use it as the **default** tool for code discovery in this repo.
 
-**Use sverklo for:**
-- \`sverklo_search\` — exploratory questions where you don't know the exact symbol ("how does auth work", "find anything related to billing")
-- \`sverklo_impact\` — refactor blast radius (who calls this function)
-- \`sverklo_refs\` — all references to a symbol
-- \`sverklo_deps\` — file dependency graph (imports + importers)
-- \`sverklo_lookup\` — find function/class definitions by name
-- \`sverklo_overview\` — high-level codebase map (PageRank-ranked)
-- \`sverklo_audit\` — god nodes, hub files, dead code candidates
-- \`sverklo_remember\` / \`sverklo_recall\` — persist decisions across sessions
+### Always Do
 
-**Prefer Grep/Read for:**
-- Exact string matches and literal patterns
-- Reading specific file contents or line ranges
-- Focused diff review where you know which files matter
+- **MUST call \`sverklo_overview\` before exploring an unfamiliar directory.** It returns the PageRank-ranked map of the codebase in one call — much cheaper than \`ls\` + \`Read\` loops.
+- **MUST use \`sverklo_search\` instead of Grep for any query that is conceptual or fuzzy** ("how does auth work", "anything related to billing", "where do we handle retries"). Grep is for exact strings only.
+- **MUST use \`sverklo_lookup\` to find a symbol's definition** by name — never grep + Read for this.
+- **MUST run \`sverklo_impact\` before renaming, deleting, or changing the signature of any function/class/method** that may be called from elsewhere. Report the blast radius (callers, depth) to the user before editing.
+- **MUST use \`sverklo_refs\` to enumerate callers of a symbol.**
+- **MUST use \`sverklo_deps\` to see imports + importers of a file** before moving or splitting it.
+- **MUST call \`sverklo_remember\` when the user corrects you** with phrasing like "stop X", "never X", "always Y", "don't Y", "prefer Z", "remember that I want Q", "actually, do W". Save with \`category:correction\` (stop/never/don't) or \`category:preference\` (prefer/want/like), \`kind:semantic\`, and the user's instruction as content. Save before continuing the response. Do not ask permission — corrections are explicit instructions to persist behavior across sessions.
+- **MUST call \`sverklo_recall\` at the start of work** on a non-trivial task to surface prior decisions and corrections.
 
-**Tool-call discipline:**
-- Avoid re-reading files you have already read unless they may have changed. When sverklo returns a path, treat it as known — use \`sverklo_lookup\` for a single symbol rather than re-reading the whole file.
-- Prefer this exploration order: \`sverklo_overview\` (1 call) → \`sverklo_search\` (1 call) → \`sverklo_lookup\` on the top hit → \`sverklo_refs\` / \`sverklo_impact\` only if you need the blast radius. If you've made 5 sverklo calls and still don't have the answer, ask a clarifying question instead of burning 10 more.
-- Stay in scope on refactors: modify only what \`sverklo_impact\` flagged. Don't add docstrings, type annotations, or "improvements" to adjacent code that wasn't part of the request — those changes are invisible to the impact analysis and create review noise.
+### Never Do
 
-**Memory discipline (\`sverklo_remember\`):**
-- Save a memory only when (a) a bug took >1 hour to debug, (b) the same mistake repeats across sessions, (c) a non-obvious architectural decision needs to survive context loss, or (d) an audit finding requires user judgment. Do not save routine task summaries — \`sverklo_recall\` is most useful when its hits are signal-dense.
-- **Capture user corrections automatically.** When the user corrects you with phrasing like "stop using X", "never X", "always Y", "don't Y", "prefer Z", "remember that I want Q", or "actually, do W instead" — call \`sverklo_remember\` once with \`category:correction\` (for "stop/never/don't" forms) or \`category:preference\` ("prefer/want/like"), \`kind:semantic\`, and the user's instruction as the content. Save before you continue with the response. Don't ask permission; corrections are explicit instructions to persist behavior across sessions, and silently re-violating the same correction next session is the failure mode this captures.
+- **NEVER use Grep when the query is conceptual.** Grep cannot find "the auth flow" — sverklo_search can.
+- **NEVER edit a function or class without first running \`sverklo_impact\`** on it. Silently breaking a caller is the most expensive bug this codebase produces.
+- **NEVER ignore HIGH or CRITICAL impact warnings** without surfacing them to the user.
+- **NEVER rename symbols with find-and-replace.** Use \`sverklo_refs\` first; it knows which "foo" is the function and which is a string.
+- **NEVER save routine task summaries to memory.** \`sverklo_recall\` is only useful when hits are signal-dense — save only (a) bugs that took >1h to debug, (b) recurring mistakes, (c) non-obvious architectural decisions, (d) audit findings needing user judgment.
+- **NEVER re-read a file sverklo just returned a path for.** Use \`sverklo_lookup\` for the specific symbol instead.
 
-**Output discipline:**
-- No preambles ("Here are the results", "Great question"), no closing affirmations, no em-dashes used as conversational pauses. State the finding, show the fix, stop.
-- User instructions always override this file.
+### When Grep / Read still wins
+
+| Task | Tool |
+|---|---|
+| Exact string match (\`"TODO(alice)"\`, error message text) | Grep |
+| Read a known file at a known path | Read |
+| Inspect a specific line range | Read with offset/limit |
+
+### Exploration order
+
+\`sverklo_overview\` (1 call) → \`sverklo_search\` (1 call) → \`sverklo_lookup\` on the top hit → \`sverklo_refs\` / \`sverklo_impact\` only if you need the blast radius. If you've made 5 sverklo calls and still don't have the answer, **stop and ask a clarifying question** — don't burn 10 more.
+
+### Output discipline
+
+No preambles ("Here are the results", "Great question"), no closing affirmations, no em-dashes as conversational pauses. State the finding, show the fix, stop. User instructions override this file.
 `;
 
 function readFileMaybe(path: string): { exists: boolean; content: string; path: string } {
@@ -466,7 +474,12 @@ export async function initProject(
   const mcpConfigPath = join(projectPath, ".mcp.json");
   const sverkloBin = resolveSverkloBinary();
 
-  let mcpConfig: { mcpServers?: Record<string, { command: string; args: string[] }> } = {};
+  let mcpConfig: {
+    mcpServers?: Record<
+      string,
+      { command: string; args: string[]; env?: Record<string, string> }
+    >;
+  } = {};
   if (existsSync(mcpConfigPath)) {
     try {
       mcpConfig = JSON.parse(readFileSync(mcpConfigPath, "utf-8"));
@@ -476,15 +489,38 @@ export async function initProject(
   }
 
   if (mcpConfig.mcpServers?.sverklo) {
-    console.log("  .mcp.json — sverklo already configured, skipping");
+    // Soft migration for users who ran `sverklo init` before v0.20.9 (when
+    // we added the SVERKLO_PROFILE=core default). If the entry has no env
+    // block at all, add it — silent 36→5 tool reduction on next CC restart.
+    // If env exists (even empty), respect it: the user may have intentionally
+    // chosen full or some other profile.
+    const existing = mcpConfig.mcpServers.sverklo;
+    if (!existing.env) {
+      existing.env = { SVERKLO_PROFILE: "core" };
+      writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2) + "\n");
+      console.log(
+        "  .mcp.json — added SVERKLO_PROFILE=core to existing sverklo entry (was loading 36 tools, now 5)"
+      );
+    } else {
+      console.log("  .mcp.json — sverklo already configured, skipping");
+    }
   } else {
     if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+    // SVERKLO_PROFILE=core ships 5 tools (status/search/lookup/refs/overview)
+    // instead of the full 36. Claude Code stalls on tool selection when it
+    // sees 36 sverklo tools alongside its built-ins; users with full(36)
+    // report sverklo "doesn't get called" even after init succeeds. core(5)
+    // is the smallest set that still answers "find / understand / explore"
+    // questions; users who need impact/audit/etc. flip to standard via env.
     mcpConfig.mcpServers.sverklo = {
       command: sverkloBin,
       args: ["."],
+      env: { SVERKLO_PROFILE: "core" },
     };
     writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2) + "\n");
-    console.log(`  .mcp.json — added sverklo MCP server (${sverkloBin})`);
+    console.log(
+      `  .mcp.json — added sverklo MCP server (${sverkloBin}, profile: core / 5 tools)`
+    );
   }
 
   // 3. Auto-allow sverklo MCP tools in .claude/settings.local.json so Claude Code

@@ -105,13 +105,31 @@ export function runDoctor(projectPath: string): void {
     try {
       const mcp = JSON.parse(readFileSync(mcpPath, "utf-8"));
       if (mcp.mcpServers?.sverklo) {
-        const cmd = mcp.mcpServers.sverklo.command;
+        const entry = mcp.mcpServers.sverklo as {
+          command?: string;
+          args?: unknown[];
+          env?: Record<string, string>;
+        };
+        const cmd = entry.command;
+        const profile = entry.env?.SVERKLO_PROFILE;
         if (cmd === "sverklo" || cmd?.endsWith("/sverklo")) {
-          checks.push({
-            name: ".mcp.json (project root)",
-            status: "ok",
-            message: `sverklo configured: ${cmd}`,
-          });
+          // Surface the active profile in the OK message — silent 36-tool
+          // configs are exactly the failure mode v0.20.9 fixed, so users
+          // re-running doctor on stale configs need to see it.
+          if (profile) {
+            checks.push({
+              name: ".mcp.json (project root)",
+              status: "ok",
+              message: `sverklo configured: ${cmd} (profile: ${profile})`,
+            });
+          } else {
+            checks.push({
+              name: ".mcp.json (project root)",
+              status: "warn",
+              message: `sverklo configured: ${cmd} — no SVERKLO_PROFILE set, Claude Code sees all 36 tools`,
+              fix: "sverklo init (will add SVERKLO_PROFILE=core for 5-tool default)",
+            });
+          }
         } else {
           checks.push({
             name: ".mcp.json (project root)",
@@ -429,61 +447,164 @@ export function runDoctor(projectPath: string): void {
     });
   }
 
-  // 7. MCP handshake (actually try to talk to the server)
+  // 7. MCP round-trip: initialize → tools/list → tools/call sverklo_status.
+  //    A passing handshake alone is not proof Claude Code can actually USE
+  //    sverklo — it only proves the binary speaks JSON-RPC. The dispatch
+  //    probe runs the same three calls Claude Code makes on every fresh
+  //    session, so when this passes the user has positive evidence the
+  //    full path works. Closes the silent-failure gap behind reports like
+  //    "doctor said OK but Claude still doesn't call sverklo".
   if (sverkloBin) {
+    const initReq = {
+      jsonrpc: "2.0" as const,
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "sverklo-doctor", version: "1.0" },
+      },
+    };
+    const initializedNote = {
+      jsonrpc: "2.0" as const,
+      method: "notifications/initialized",
+    };
+    const listReq = {
+      jsonrpc: "2.0" as const,
+      id: 2,
+      method: "tools/list",
+    };
+    const callReq = {
+      jsonrpc: "2.0" as const,
+      id: 3,
+      method: "tools/call",
+      params: { name: "sverklo_status", arguments: {} },
+    };
+    const input =
+      [initReq, initializedNote, listReq, callReq]
+        .map((r) => JSON.stringify(r))
+        .join("\n") + "\n";
+
     try {
-      const result = spawnSync(
-        sverkloBin,
-        ["."],
-        {
-          input:
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: 1,
-              method: "initialize",
-              params: {
-                protocolVersion: "2024-11-05",
-                capabilities: {},
-                clientInfo: { name: "sverklo-doctor", version: "1.0" },
-              },
-            }) + "\n",
-          encoding: "utf-8",
-          cwd: projectPath,
-          timeout: 8000,
-          maxBuffer: 1024 * 1024,
-        }
-      );
+      const result = spawnSync(sverkloBin, ["."], {
+        input,
+        encoding: "utf-8",
+        cwd: projectPath,
+        timeout: 15000,
+        maxBuffer: 4 * 1024 * 1024,
+      });
 
       const out = result.stdout || "";
-      const firstLine = out.split("\n").find((l) => l.trim());
-      if (firstLine) {
+      const responses = new Map<number, unknown>();
+      for (const line of out.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
         try {
-          const parsed = JSON.parse(firstLine);
-          if (parsed.result?.serverInfo?.name === "sverklo") {
-            checks.push({
-              name: "MCP handshake",
-              status: "ok",
-              message: `responds correctly (protocol ${parsed.result.protocolVersion})`,
-            });
-          } else {
-            checks.push({
-              name: "MCP handshake",
-              status: "warn",
-              message: "unexpected response shape",
-            });
-          }
+          const parsed = JSON.parse(trimmed) as { id?: number };
+          if (typeof parsed.id === "number") responses.set(parsed.id, parsed);
         } catch {
-          checks.push({
-            name: "MCP handshake",
-            status: "fail",
-            message: "first stdout line is not valid JSON",
-          });
+          // Non-JSON output is ignored (logs may interleave with responses
+          // depending on transport — only structured replies count.)
         }
+      }
+
+      // 7a. Handshake response (id=1)
+      const initResp = responses.get(1) as
+        | {
+            result?: {
+              protocolVersion?: string;
+              serverInfo?: { name?: string };
+            };
+          }
+        | undefined;
+      if (initResp?.result?.serverInfo?.name === "sverklo") {
+        checks.push({
+          name: "MCP handshake",
+          status: "ok",
+          message: `responds correctly (protocol ${initResp.result.protocolVersion})`,
+        });
+      } else if (initResp) {
+        checks.push({
+          name: "MCP handshake",
+          status: "warn",
+          message: "unexpected response shape",
+        });
       } else {
         checks.push({
           name: "MCP handshake",
           status: "fail",
-          message: "no stdout received",
+          message: "no initialize response",
+        });
+      }
+
+      // 7b. tools/list response (id=2) — proves the server advertises
+      //     sverklo_status; if Claude Code can read this, it can route.
+      const listResp = responses.get(2) as
+        | { result?: { tools?: Array<{ name?: string }> }; error?: { message?: string } }
+        | undefined;
+      const advertised = listResp?.result?.tools?.map((t) => t.name).filter(Boolean) ?? [];
+      if (advertised.length > 0) {
+        const hasStatus = advertised.includes("sverklo_status");
+        if (hasStatus) {
+          checks.push({
+            name: "MCP tools/list",
+            status: "ok",
+            message: `${advertised.length} tool${advertised.length === 1 ? "" : "s"} advertised (sverklo_status present)`,
+          });
+        } else {
+          checks.push({
+            name: "MCP tools/list",
+            status: "warn",
+            message: `${advertised.length} tools advertised but sverklo_status missing — profile may be filtering it`,
+            fix: "unset SVERKLO_PROFILE or use SVERKLO_PROFILE=core",
+          });
+        }
+      } else if (listResp?.error?.message) {
+        checks.push({
+          name: "MCP tools/list",
+          status: "fail",
+          message: `error: ${listResp.error.message}`,
+        });
+      } else {
+        checks.push({
+          name: "MCP tools/list",
+          status: "fail",
+          message: "no tools/list response — Claude Code would see zero tools",
+        });
+      }
+
+      // 7c. tools/call sverklo_status (id=3) — proves dispatch end-to-end.
+      const callResp = responses.get(3) as
+        | {
+            result?: { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
+            error?: { message?: string };
+          }
+        | undefined;
+      const content = callResp?.result?.content;
+      const firstText = content?.find((c) => c.type === "text")?.text ?? "";
+      if (callResp?.result && !callResp.result.isError && firstText.length > 0) {
+        checks.push({
+          name: "MCP tools/call",
+          status: "ok",
+          message: `sverklo_status returned ${firstText.length} chars — dispatch round-trip works`,
+        });
+      } else if (callResp?.error?.message) {
+        checks.push({
+          name: "MCP tools/call",
+          status: "fail",
+          message: `error: ${callResp.error.message}`,
+        });
+      } else if (callResp?.result?.isError) {
+        checks.push({
+          name: "MCP tools/call",
+          status: "fail",
+          message: `tool returned isError: ${firstText.slice(0, 120)}`,
+        });
+      } else {
+        checks.push({
+          name: "MCP tools/call",
+          status: "fail",
+          message: "no tools/call response — Claude Code calls would hang or error",
         });
       }
     } catch (err) {
