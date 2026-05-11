@@ -141,7 +141,20 @@ jobs:
             }
           '
 
+      - name: Write audit summary to job summary
+        run: |
+          # Always-visible audit results, regardless of whether the
+          # comment step succeeds. Fork PRs can't post comments
+          # (read-only GITHUB_TOKEN by GitHub's security model);
+          # job summary is the fallback signal for fork contributors.
+          cat /tmp/comment.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Post sticky PR comment
+        # Fork PRs can't post comments — GITHUB_TOKEN is read-only on the
+        # base repo. Don't fail the workflow over that; results are in the
+        # job summary above and the JSON artifact. Same pattern as
+        # auto-bench.yml (sverklo/sverklo#35).
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
