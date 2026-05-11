@@ -1199,7 +1199,10 @@ if (command === "audit") {
   const { homedir: hd } = await import("node:os");
   const mDir = joinPath(hd(), ".sverklo", "models");
   if (!modelExists(joinPath(mDir, "model.onnx"))) {
-    console.log("Downloading embedding model (~90MB)...");
+    // stderr because `audit --format json` (and any other JSON-output
+    // subcommand) pipes stdout to a parser; this preamble would
+    // contaminate the JSON. PR #33 CI surfaced this.
+    console.error("Downloading embedding model (~90MB)...");
     const { setupModels } = await import("../src/indexer/setup.js");
     await setupModels().catch(() => {});
   }
@@ -1465,7 +1468,10 @@ if (command === "wiki") {
   const { homedir: hd } = await import("node:os");
   const mDir = joinPath(hd(), ".sverklo", "models");
   if (!modelExists(joinPath(mDir, "model.onnx"))) {
-    console.log("Downloading embedding model (~90MB)...");
+    // stderr because `audit --format json` (and any other JSON-output
+    // subcommand) pipes stdout to a parser; this preamble would
+    // contaminate the JSON. PR #33 CI surfaced this.
+    console.error("Downloading embedding model (~90MB)...");
     const { setupModels } = await import("../src/indexer/setup.js");
     await setupModels().catch(() => {});
   }
