@@ -9,6 +9,10 @@ const MODEL_URL =
 const TOKENIZER_URL =
   "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
 
+// Progress messages go to stderr so they don't contaminate stdout when
+// a caller is piping it into a file or JSON parser. Caught by audit-self
+// CI in PR #33 where these strings landed inside /tmp/audit.json and
+// broke the downstream JSON.parse check.
 export async function setupModels(): Promise<void> {
   mkdirSync(MODEL_DIR, { recursive: true });
 
@@ -16,31 +20,31 @@ export async function setupModels(): Promise<void> {
   const tokenizerPath = join(MODEL_DIR, "tokenizer.json");
 
   if (existsSync(modelPath) && existsSync(tokenizerPath)) {
-    console.log("Models already downloaded at", MODEL_DIR);
+    console.error("Models already downloaded at", MODEL_DIR);
     return;
   }
 
-  console.log("Downloading embedding model (~90MB)...");
+  console.error("Downloading embedding model (~90MB)...");
 
   if (!existsSync(modelPath)) {
-    console.log("  Downloading model.onnx...");
+    console.error("  Downloading model.onnx...");
     const resp = await fetch(MODEL_URL);
     if (!resp.ok) throw new Error(`Failed to download model: ${resp.status}`);
     const buffer = Buffer.from(await resp.arrayBuffer());
     const { writeFileSync } = await import("node:fs");
     writeFileSync(modelPath, buffer);
-    console.log("  model.onnx downloaded");
+    console.error("  model.onnx downloaded");
   }
 
   if (!existsSync(tokenizerPath)) {
-    console.log("  Downloading tokenizer.json...");
+    console.error("  Downloading tokenizer.json...");
     const resp = await fetch(TOKENIZER_URL);
     if (!resp.ok) throw new Error(`Failed to download tokenizer: ${resp.status}`);
     const text = await resp.text();
     const { writeFileSync } = await import("node:fs");
     writeFileSync(tokenizerPath, text);
-    console.log("  tokenizer.json downloaded");
+    console.error("  tokenizer.json downloaded");
   }
 
-  console.log("Setup complete! Models saved to", MODEL_DIR);
+  console.error("Setup complete! Models saved to", MODEL_DIR);
 }
