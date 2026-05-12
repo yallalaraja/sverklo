@@ -13,6 +13,7 @@ import { SverkloRerankBaseline } from "../baselines/sverklo-rerank.ts";
 import { loadJsonl } from "../ground-truth/schema.ts";
 import { loadManifest } from "../datasets/fetch.ts";
 import { generateExpressTasks } from "../ground-truth/seed/express.gen.ts";
+import { generateFastapiTasks } from "../ground-truth/seed/fastapi.gen.ts";
 import { generateFlaskTasks } from "../ground-truth/seed/flask.gen.ts";
 import { generateLodashTasks } from "../ground-truth/seed/lodash.gen.ts";
 import { generateRequestsTasks } from "../ground-truth/seed/requests.gen.ts";
@@ -62,6 +63,9 @@ export async function runAll(): Promise<void> {
     } else if (d.name === "flask") {
       console.error(`[bench] generating flask ground truth`);
       tasksByDataset.set(d.name, generateFlaskTasks(d.rootPath));
+    } else if (d.name === "fastapi") {
+      console.error(`[bench] generating fastapi ground truth`);
+      tasksByDataset.set(d.name, generateFastapiTasks(d.rootPath));
     }
   }
 

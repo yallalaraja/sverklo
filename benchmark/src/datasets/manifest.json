@@ -32,6 +32,13 @@
       "repo": "https://github.com/pallets/flask.git",
       "ref": "3.0.3",
       "checkoutDir": "benchmark/.cache/flask-3.0.3"
+    },
+    {
+      "name": "fastapi",
+      "kind": "git",
+      "repo": "https://github.com/tiangolo/fastapi.git",
+      "ref": "0.115.0",
+      "checkoutDir": "benchmark/.cache/fastapi-0.115.0"
     }
   ]
 }
