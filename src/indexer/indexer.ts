@@ -479,6 +479,12 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       fileImports.set(relativePath, result.imports);
       buildGraph(fileImports, this.fileStore, this.graphStore, this.config.rootPath);
 
+      // Two-pass to batch the embedding call. Per-chunk `embed([text])`
+      // pays full ONNX session overhead per invocation; on a file with 30+
+      // symbols that's 30+ separate runs vs one. The full-index path
+      // (index() above) already does this; reindexFile was the laggard.
+      // Surfaced by the Performance Benchmarker dogfood pass 2026-05-13.
+      const pending: Array<{ chunkId: number; text: string }> = [];
       for (const chunk of result.chunks) {
         const description = describeChunk(chunk, relativePath, language);
         const tokenCount = estimateTokens(chunk.content);
@@ -504,9 +510,20 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
           );
         }
 
-        const embText = description + "\n" + chunk.content.slice(0, 512);
-        const [vector] = await this.embed([embText]);
-        this.embeddingStore.insert(chunkId, vector);
+        pending.push({
+          chunkId,
+          text: description + "\n" + chunk.content.slice(0, 512),
+        });
+      }
+
+      // Single batched embed call. The embedding provider handles its own
+      // internal batching (BATCH=16 in embedder.ts) — passing the whole
+      // file's chunks lets it run in one ONNX session call when N ≤ BATCH.
+      if (pending.length > 0) {
+        const vectors = await this.embed(pending.map((p) => p.text));
+        for (let i = 0; i < pending.length; i++) {
+          this.embeddingStore.insert(pending[i].chunkId, vectors[i]);
+        }
       }
     } catch (err) {
       logError(`Failed to reindex ${relativePath}`, err);

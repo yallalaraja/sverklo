@@ -43,18 +43,54 @@ export function handleTestMap(
     return `Error: invalid git ref \`${ref}\`. Ref must match a safe refspec pattern (no shell metacharacters).`;
   }
 
-  // 1. Get changed files from git diff
+  // 1. Get changed files from git diff. Distinguish three failure modes
+  // so the user knows what to fix: (a) project root isn't a git repo,
+  // (b) git binary not found, (c) git rejects the ref. Previous behavior
+  // collapsed all three into a single misleading "not a git repo" message
+  // (dogfood review 2026-05-13).
   let changedPaths: string[];
-  try {
-    const result = spawnSync("git", ["diff", "--name-only", "--diff-filter=ACMRT", ref], {
-      cwd: indexer.rootPath, encoding: "utf-8", timeout: 8000, maxBuffer: 5 * 1024 * 1024,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(result.stderr || `git exited with ${result.status}`);
+  {
+    // (a) Is this a git repo at all? .git can be a directory (regular
+    // checkout) or a file (worktree linkfile). Both are valid.
+    let isGitRepo = false;
+    try {
+      const { existsSync } = require("node:fs") as typeof import("node:fs");
+      isGitRepo = existsSync(`${indexer.rootPath}/.git`);
+    } catch {
+      // existsSync should never throw; if it does, treat as not-a-repo.
+    }
+    if (!isGitRepo) {
+      return `Error: \`${indexer.rootPath}\` is not a git repository (no .git found). \`sverklo_test_map\` only works on git-versioned projects.`;
+    }
+
+    const result = spawnSync(
+      "git",
+      ["diff", "--name-only", "--diff-filter=ACMRT", ref],
+      {
+        cwd: indexer.rootPath,
+        encoding: "utf-8",
+        timeout: 8000,
+        maxBuffer: 5 * 1024 * 1024,
+      },
+    );
+    if (result.error) {
+      const code = (result.error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return `Error: \`git\` binary not found on PATH. Install git and retry.`;
+      }
+      return `Error: failed to spawn \`git diff\`: ${result.error.message}`;
+    }
+    if (result.status !== 0) {
+      // git wrote to stderr. The typical case is "fatal: bad revision
+      // 'foo'" — surface the actual message so the user can fix their ref.
+      const stderr = (result.stderr || "").trim();
+      const hint = stderr.includes("ambiguous argument") || stderr.includes("bad revision")
+        ? ` Try \`sverklo_test_map ref:"HEAD~1..HEAD"\` if HEAD~N is out of range for this repo's history.`
+        : "";
+      return `Error from \`git diff ${ref}\`: ${stderr || `exit ${result.status}`}.${hint}`;
+    }
     const out = result.stdout;
     changedPaths = out.trim().split("\n").filter(Boolean);
-  } catch {
-    return `Error: not a git repository or invalid ref \`${ref}\`. Try \`sverklo_test_map ref:"HEAD~1..HEAD"\`.`;
   }
 
   if (changedPaths.length === 0) {
