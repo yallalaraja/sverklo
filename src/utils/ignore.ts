@@ -22,6 +22,17 @@ const HARDCODED_IGNORES = [
   "target", // Rust
   "Pods", // iOS
   ".gradle",
+  // Benchmark fixture corpora — express, lodash, flask, fastapi, requests,
+  // prisma, vite, etc. cloned for sverklo's own bench harness. Indexing
+  // these on sverklo's own repo blew up PageRank with thousands of
+  // unrelated symbols, contaminated audit's security pass with vendored
+  // CVE-shaped strings, and dropped `sverklo_search` precision by 30-60%
+  // on generic queries (4-agent dogfood review 2026-05-13). Users running
+  // bench dev work can override by adding `!benchmark/.cache` to their
+  // .sverkloignore.
+  "benchmark/.cache",
+  ".sverklo", // sverklo's own state dir; never index it
+  ".cache", // generic cache dirs
   "*.min.js",
   "*.min.css",
   "*.map",

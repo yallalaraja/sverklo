@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 
 export interface WorkspaceConfig {
@@ -12,8 +12,75 @@ export interface WorkspaceConfig {
 
 const WORKSPACE_DIR = join(homedir(), ".sverklo", "workspaces");
 
+// Workspace name validation. Must be a single-segment identifier — no path
+// separators, no `..`, no leading `.`, conservative character class.
+// Without this, `name + ".json"` flowing into `join()` resolved `..`
+// segments and let arbitrary file writes escape WORKSPACE_DIR. Security
+// audit 2026-05-13 (Security Engineer dogfood pass) found this reachable
+// from MCP tool args + CLI argv.
+const WORKSPACE_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function validateWorkspaceName(name: string): void {
+  if (!WORKSPACE_NAME_RE.test(name)) {
+    throw new Error(
+      `Invalid workspace name "${name}". Must be 1-64 chars, [a-zA-Z0-9_-] only.`
+    );
+  }
+}
+
 function getWorkspacePath(name: string): string {
+  validateWorkspaceName(name);
   return join(WORKSPACE_DIR, name + ".json");
+}
+
+// Repo-path validation. `resolve()` alone is lexical — it doesn't follow
+// symlinks, so a symlinked `repo` inside a "safe" parent escapes naive
+// prefix checks. We use realpathSync to canonicalize, then refuse paths
+// inside well-known sensitive directories. The path must also exist;
+// non-existent paths can't be indexed and are usually typos worth
+// surfacing as errors at registration time.
+// Computed lazily so tests can stub HOME. Both the raw `join(home, ...)`
+// form AND the realpath-canonicalized form are returned, because on
+// macOS `/tmp` resolves to `/private/tmp` via symlink — a sensitive dir
+// under a symlinked HOME would fail to match if we only compared one form.
+function sensitivePrefixes(): string[] {
+  const home = homedir();
+  const homeReal = (() => {
+    try {
+      return realpathSync(home);
+    } catch {
+      return home;
+    }
+  })();
+  const dirs = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".sverklo"];
+  const out = new Set<string>();
+  for (const d of dirs) {
+    out.add(join(home, d));
+    out.add(join(homeReal, d));
+  }
+  return [...out];
+}
+
+function validateRepoPath(repoPath: string): string {
+  let realPath: string;
+  try {
+    realPath = realpathSync(resolve(repoPath));
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    if (e.code === "ENOENT") {
+      throw new Error(`Repo path does not exist: ${repoPath}`);
+    }
+    throw new Error(`Failed to resolve repo path "${repoPath}": ${e.message ?? String(err)}`);
+  }
+  for (const sensitive of sensitivePrefixes()) {
+    if (realPath === sensitive || realPath.startsWith(sensitive + sep)) {
+      throw new Error(
+        `Refusing to register a workspace repo inside ${sensitive}. ` +
+          `If this was intentional, file an issue — we'd rather get a request than leak credentials.`
+      );
+    }
+  }
+  return realPath;
 }
 
 export function listWorkspaces(): string[] {
@@ -40,20 +107,22 @@ export function saveWorkspace(config: WorkspaceConfig): void {
 }
 
 export function createWorkspace(name: string, repoPaths: string[]): WorkspaceConfig {
+  validateWorkspaceName(name);
   const config: WorkspaceConfig = {
     name,
-    repos: repoPaths.map((p) => ({ path: resolve(p) })),
+    repos: repoPaths.map((p) => ({ path: validateRepoPath(p) })),
   };
   saveWorkspace(config);
   return config;
 }
 
 export function addRepoToWorkspace(name: string, repoPath: string, alias?: string): WorkspaceConfig {
+  validateWorkspaceName(name);
   let config = loadWorkspace(name);
   if (!config) {
     config = { name, repos: [] };
   }
-  const absPath = resolve(repoPath);
+  const absPath = validateRepoPath(repoPath);
   if (!config.repos.some((r) => r.path === absPath)) {
     config.repos.push({ path: absPath, alias });
     saveWorkspace(config);
@@ -62,8 +131,11 @@ export function addRepoToWorkspace(name: string, repoPath: string, alias?: strin
 }
 
 export function removeRepoFromWorkspace(name: string, repoPath: string): WorkspaceConfig | null {
+  validateWorkspaceName(name);
   const config = loadWorkspace(name);
   if (!config) return null;
+  // For removal, use lexical resolve (the user may want to remove a path
+  // that no longer exists on disk). validateRepoPath would refuse that.
   const absPath = resolve(repoPath);
   config.repos = config.repos.filter((r) => r.path !== absPath);
   saveWorkspace(config);
