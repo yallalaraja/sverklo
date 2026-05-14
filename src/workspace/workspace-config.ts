@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
+import { validateWorkspaceName } from "../utils/workspace-name.js";
 
 const WORKSPACES_DIR = join(homedir(), ".sverklo", "workspaces");
 
@@ -25,6 +26,7 @@ export interface WorkspaceConfig {
  * Returns null if the file doesn't exist or can't be parsed.
  */
 export function loadWorkspaceConfig(name: string): WorkspaceConfig | null {
+  validateWorkspaceName(name);
   const filePath = join(WORKSPACES_DIR, `${name}.yaml`);
   if (!existsSync(filePath)) return null;
   try {
@@ -112,6 +114,7 @@ export function findWorkspaceForProject(projectPath: string): WorkspaceConfig | 
  * Creates the parent directory if it doesn't exist.
  */
 export function getWorkspaceDbPath(name: string): string {
+  validateWorkspaceName(name);
   const dir = join(WORKSPACES_DIR, name);
   mkdirSync(dir, { recursive: true });
   return join(dir, "cross.db");

@@ -5,7 +5,7 @@
  */
 
 import type { IndexGraph } from "../indexer/index-graph.js";
-import type { AuditAnalysis } from "./audit-analysis.js";
+import { type AuditAnalysis, isVendoredPath } from "./audit-analysis.js";
 
 // ─── Layer detection ───
 
@@ -81,8 +81,19 @@ export function generateAuditArch(
   analysis: AuditAnalysis,
   projectName: string,
 ): string {
-  const files = indexer.fileStore.getAll();
-  const edges = indexer.graphStore.getAll();
+  const allFiles = indexer.fileStore.getAll();
+  const allEdges = indexer.graphStore.getAll();
+  // Skip vendored / cached / generated paths so the architecture
+  // visualization reflects the project's own structure rather than
+  // third-party deps. Matches the audit-analysis exclusion.
+  const files = allFiles.filter((f) => !isVendoredPath(f.path));
+  const excludedIds = new Set<number>();
+  for (const f of allFiles) {
+    if (isVendoredPath(f.path)) excludedIds.add(f.id);
+  }
+  const edges = allEdges.filter(
+    (e) => !excludedIds.has(e.source_file_id) && !excludedIds.has(e.target_file_id),
+  );
 
   // Build id->path map
   const idToPath = new Map<number, string>();

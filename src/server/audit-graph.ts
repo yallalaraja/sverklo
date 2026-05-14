@@ -6,15 +6,25 @@
 
 import type { IndexFiles } from "../indexer/index-files.js";
 import type { IndexGraph } from "../indexer/index-graph.js";
-import type { AuditAnalysis } from "./audit-analysis.js";
+import { type AuditAnalysis, isVendoredPath } from "./audit-analysis.js";
 
 export function generateAuditGraph(
   indexer: IndexFiles & IndexGraph,
   analysis: AuditAnalysis,
   projectName: string,
 ): string {
-  const files = indexer.fileStore.getAll();
-  const edges = indexer.graphStore.getAll();
+  const allFiles = indexer.fileStore.getAll();
+  const allEdges = indexer.graphStore.getAll();
+  // Skip vendored paths so the graph visualization reflects the project,
+  // not third-party deps. Matches audit-analysis exclusion (T1 2026-05-13).
+  const files = allFiles.filter((f) => !isVendoredPath(f.path));
+  const excludedIds = new Set<number>();
+  for (const f of allFiles) {
+    if (isVendoredPath(f.path)) excludedIds.add(f.id);
+  }
+  const edges = allEdges.filter(
+    (e) => !excludedIds.has(e.source_file_id) && !excludedIds.has(e.target_file_id),
+  );
 
   // Build id->index map for the JS side
   const idToIdx = new Map<number, number>();

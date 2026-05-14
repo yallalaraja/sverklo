@@ -402,25 +402,36 @@ async function runVectorSplit(
   // from drowning code retrieval, we score chunks separately by category:
   // code chunks (function/class/type/etc) and doc chunks (doc_section /
   // doc_code). Each list contributes its own ordered ranks to RRF.
-  const allEmbeddings = indexer.embeddingStore.getAll();
-  const fileCache = new Map<number, FileRecord>();
-  for (const f of indexer.fileStore.getAll()) fileCache.set(f.id, f);
+  //
+  // Architectural review 2026-05-13 flagged the prior implementation as
+  // CRITICAL (P1 in Performance synthesis): it loaded all embeddings
+  // into a Map, then called chunkStore.getById(chunkId) per row — an
+  // N+1 against ~50k chunks on every warm investigate call. The new
+  // path JOINs embeddings ⋈ chunks in one SQLite query so the
+  // per-row cost is just the cosine + the type bucket check.
+  const allEmbeddings = indexer.embeddingStore.getAllWithMeta();
+
+  // Lazy: only materialize the file lookup when scope filtering is on.
+  // Saves a fileStore.getAll() scan on the common unscoped case.
+  let fileCache: Map<number, FileRecord> | null = null;
+  if (scope) {
+    fileCache = new Map<number, FileRecord>();
+    for (const f of indexer.fileStore.getAll()) fileCache.set(f.id, f);
+  }
 
   const codeScored: { id: number; score: number }[] = [];
   const docScored: { id: number; score: number }[] = [];
 
-  for (const [chunkId, vec] of allEmbeddings) {
-    const chunk = indexer.chunkStore.getById(chunkId);
-    if (!chunk) continue;
-    if (scope) {
-      const file = fileCache.get(chunk.file_id);
-      if (!file || !file.path.startsWith(scope)) continue;
+  for (const row of allEmbeddings) {
+    if (fileCache) {
+      const file = fileCache.get(row.file_id);
+      if (!file || !file.path.startsWith(scope!)) continue;
     }
-    const score = cosineSimilarity(queryVector, vec);
-    if (chunk.type === "doc_section" || chunk.type === "doc_code") {
-      docScored.push({ id: chunkId, score });
+    const score = cosineSimilarity(queryVector, row.vector);
+    if (row.chunk_type === "doc_section" || row.chunk_type === "doc_code") {
+      docScored.push({ id: row.chunk_id, score });
     } else {
-      codeScored.push({ id: chunkId, score });
+      codeScored.push({ id: row.chunk_id, score });
     }
   }
   codeScored.sort((a, b) => b.score - a.score);

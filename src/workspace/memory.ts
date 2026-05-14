@@ -25,6 +25,7 @@ import { createDatabase } from "../storage/database.js";
 import { MemoryStore } from "../storage/memory-store.js";
 import { MemoryEmbeddingStore } from "../storage/memory-embedding-store.js";
 import { listWorkspaces, loadWorkspace } from "../workspace.js";
+import { validateWorkspaceName } from "../utils/workspace-name.js";
 import type { Memory, MemoryCategory, MemoryKind } from "../types/index.js";
 
 export interface WorkspaceMemoryHandle {
@@ -49,9 +50,13 @@ export function workspaceMemoryDb(name: string): string {
  * schema. Subsequent calls reuse the file.
  */
 export function openWorkspaceMemory(name: string): WorkspaceMemoryHandle {
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error(`workspace name must match [A-Za-z0-9._-]+, got "${name}"`);
-  }
+  // Shared validator rejects `..`, leading `.`, and path separators. The
+  // prior regex /^[A-Za-z0-9._-]+$/ matched the literal `..`, which under
+  // join(home, ".sverklo", "workspaces", "..") resolved to ~/.sverklo and
+  // let openWorkspaceMemory clobber unrelated DBs. Architectural review
+  // 2026-05-13 flagged this as a CRITICAL parallel to the workspace.ts
+  // path-escape patched in v0.20.20.
+  validateWorkspaceName(name);
   const dir = workspaceMemoryDir(name);
   mkdirSync(dir, { recursive: true });
   const dbPath = workspaceMemoryDb(name);

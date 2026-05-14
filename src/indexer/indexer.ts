@@ -228,13 +228,52 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
   // the same query embeds once instead of three times. Bounded LRU; the
   // ONNX embedding takes ~30-60 ms for a single string, so a cache hit
   // saves a meaningful chunk of the chained-call latency.
+  //
+  // Cache key includes the active provider name so a mid-process
+  // SVERKLO_EMBEDDING_PROVIDER switch (or lazy init landing on a
+  // different default than the bootstrap legacyEmbed) doesn't serve
+  // dimension-incompatible vectors.
   private __embedCache = new Map<string, Float32Array>();
   private static __embedCacheMax = 64;
 
   async embed(texts: string[]): Promise<Float32Array[]> {
+    // Fast path: only the single-text query path is cacheable. Multi-
+    // text batches are index-time bulk work and would just thrash the
+    // cache. Use the cache; otherwise fall through to the provider.
+    if (texts.length === 1) {
+      const providerName = this.embeddingProvider?.name ?? "default";
+      const key = `${providerName}\x00${texts[0]}`;
+      const hit = this.__embedCache.get(key);
+      if (hit !== undefined) {
+        // LRU touch: re-insert so this key becomes most-recent.
+        this.__embedCache.delete(key);
+        this.__embedCache.set(key, hit);
+        return [hit];
+      }
+
+      const vec = this.embeddingProvider
+        ? (await this.embeddingProvider.embed(texts))[0]
+        : (await this.initLegacyAndEmbed(texts))[0];
+
+      this.__embedCache.set(key, vec);
+      if (this.__embedCache.size > Indexer.__embedCacheMax) {
+        // Evict the least-recently-used key (first in insertion order).
+        const oldest = this.__embedCache.keys().next().value;
+        if (oldest !== undefined) this.__embedCache.delete(oldest);
+      }
+      return [vec];
+    }
+
     if (this.embeddingProvider) {
       return this.embeddingProvider.embed(texts);
     }
+    return this.initLegacyAndEmbed(texts);
+  }
+
+  // Bootstrap the legacy embedder if the provider hasn't lazily
+  // initialized yet. Extracted so both the cached and uncached paths
+  // share the same init.
+  private async initLegacyAndEmbed(texts: string[]): Promise<Float32Array[]> {
     await initEmbedder();
     return legacyEmbed(texts);
   }
@@ -398,8 +437,15 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
         }
       }
 
-      // 6. Rebuild FTS index (ensures sync with content table)
-      this.db.exec("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')");
+      // 6. FTS sync is maintained by chunks_ai/chunks_ad/chunks_au
+      // triggers on every chunk INSERT/UPDATE/DELETE (see database.ts:127-142).
+      // The historical `INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')`
+      // call here indexed every chunk a SECOND time on cold-start because
+      // the triggers had already populated FTS. Architectural review
+      // 2026-05-13 (P5 in the Performance synthesis) flagged this as
+      // 10-25% of cold-start work, free to recover. If a future
+      // migration ever needs to force a full FTS rebuild, exec the
+      // rebuild statement explicitly from that migration — not here.
 
       // 7. Build dependency graph and compute PageRank
       log("Building dependency graph...");
@@ -418,7 +464,7 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
           }
         }
         if (docChunks.length > 0) {
-          const r = buildDocLinks(this.chunkStore, this.docEdgeStore, fileCache, docChunks);
+          const r = buildDocLinks(this.chunkStore, this.docEdgeStore, docChunks);
           log(
             `Doc links: ${r.docChunksProcessed} doc chunks → ${r.mentionsCreated} mentions ` +
               `(${r.resolvedCount} resolved to symbols)`

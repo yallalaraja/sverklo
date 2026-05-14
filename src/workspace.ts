@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { validateWorkspaceName } from "./utils/workspace-name.js";
 
 export interface WorkspaceConfig {
   name: string;
@@ -11,22 +12,6 @@ export interface WorkspaceConfig {
 }
 
 const WORKSPACE_DIR = join(homedir(), ".sverklo", "workspaces");
-
-// Workspace name validation. Must be a single-segment identifier — no path
-// separators, no `..`, no leading `.`, conservative character class.
-// Without this, `name + ".json"` flowing into `join()` resolved `..`
-// segments and let arbitrary file writes escape WORKSPACE_DIR. Security
-// audit 2026-05-13 (Security Engineer dogfood pass) found this reachable
-// from MCP tool args + CLI argv.
-const WORKSPACE_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
-
-function validateWorkspaceName(name: string): void {
-  if (!WORKSPACE_NAME_RE.test(name)) {
-    throw new Error(
-      `Invalid workspace name "${name}". Must be 1-64 chars, [a-zA-Z0-9_-] only.`
-    );
-  }
-}
 
 function getWorkspacePath(name: string): string {
   validateWorkspaceName(name);

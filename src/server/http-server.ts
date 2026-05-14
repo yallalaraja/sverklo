@@ -200,6 +200,26 @@ export function startHttpServer(indexer: Indexer, port: number = 3847): void {
           pagerank: r.file.pagerank,
           language: r.file.language,
         })));
+      } else if (url.pathname === "/assets/d3.min.js") {
+        // Vendored d3 (was loaded from cdnjs.cloudflare.com — Security
+        // Engineer review 2026-05-13 flagged that as a 4th network
+        // egress contradicting the "code never leaves the machine"
+        // posture, and CDN compromise → JS execution in the dashboard
+        // origin → /api/file?path=* exfiltration). Now self-hosted.
+        try {
+          const here = dirname(fileURLToPath(import.meta.url));
+          // dev: src/server/assets/  prod: dist/src/server/assets/
+          const assetPath = join(here, "assets", "d3.min.js");
+          const body = readFileSync(assetPath);
+          res.writeHead(200, {
+            "Content-Type": "application/javascript; charset=utf-8",
+            "Cache-Control": "public, max-age=31536000, immutable",
+          });
+          res.end(body);
+        } catch (err) {
+          res.writeHead(500);
+          res.end(`Asset not found: ${(err as Error).message}`);
+        }
       } else if (
         url.pathname === "/" ||
         // SPA deep-link fallback: any non-/api path serves the dashboard
@@ -210,7 +230,25 @@ export function startHttpServer(indexer: Indexer, port: number = 3847): void {
         // hit. UX audit P1.
         !url.pathname.startsWith("/api/")
       ) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        // Strict CSP: same-origin scripts only, allow inline because
+        // the dashboard's interactive code is currently embedded in the
+        // HTML template (decompose-template work tracked in Tier 2.3).
+        // Once that lands, drop 'unsafe-inline' from script-src.
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Security-Policy":
+            "default-src 'self'; " +
+            "script-src 'self' 'unsafe-inline'; " +
+            "style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data:; " +
+            "connect-src 'self'; " +
+            "font-src 'self' data:; " +
+            "object-src 'none'; " +
+            "base-uri 'self'; " +
+            "frame-ancestors 'none'",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+        });
         res.end(getDashboardHTML());
       } else {
         res.writeHead(404);

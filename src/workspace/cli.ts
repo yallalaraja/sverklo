@@ -12,6 +12,7 @@ import {
   type WorkspaceConfig,
 } from "./workspace-config.js";
 import { CrossRepoDb } from "./cross-db.js";
+import { validateWorkspaceName } from "../utils/workspace-name.js";
 
 const WORKSPACES_DIR = join(homedir(), ".sverklo", "workspaces");
 
@@ -100,6 +101,7 @@ function projectId(projectPath: string): string {
  * Auto-detects interfaces by scanning each project directory.
  */
 export async function workspaceInit(name: string, projectPaths: string[]): Promise<void> {
+  validateWorkspaceName(name);
   mkdirSync(WORKSPACES_DIR, { recursive: true });
 
   const projects: WorkspaceProject[] = projectPaths.map((p) => {

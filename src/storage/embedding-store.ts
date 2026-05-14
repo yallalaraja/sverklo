@@ -1,9 +1,17 @@
 import type Database from "better-sqlite3";
 
+export interface EmbeddingWithMeta {
+  chunk_id: number;
+  vector: Float32Array;
+  chunk_type: string;
+  file_id: number;
+}
+
 export class EmbeddingStore {
   private insertStmt: Database.Statement;
   private getStmt: Database.Statement;
   private getAllStmt: Database.Statement;
+  private getAllWithMetaStmt: Database.Statement;
   private deleteByChunkStmt: Database.Statement;
 
   constructor(private db: Database.Database) {
@@ -14,6 +22,14 @@ export class EmbeddingStore {
       "SELECT vector FROM embeddings WHERE chunk_id = ?"
     );
     this.getAllStmt = db.prepare("SELECT chunk_id, vector FROM embeddings");
+    this.getAllWithMetaStmt = db.prepare(
+      // JOIN against chunks once so callers can scope-filter / type-bucket
+      // without a per-row chunkStore.getById round-trip. Used by the
+      // broadcast vector-search path (search/investigate.ts).
+      `SELECT e.chunk_id, e.vector, c.type AS chunk_type, c.file_id
+       FROM embeddings e
+       JOIN chunks c ON c.id = e.chunk_id`
+    );
     this.deleteByChunkStmt = db.prepare(
       "DELETE FROM embeddings WHERE chunk_id = ?"
     );
@@ -45,6 +61,39 @@ export class EmbeddingStore {
       map.set(row.chunk_id, arr);
     }
     return map;
+  }
+
+  /**
+   * Broadcast scan that JOINs embeddings with chunk metadata in one
+   * SQLite query. Avoids the N+1 pattern in callers that need to
+   * score every vector AND know each chunk's type/file_id (e.g. the
+   * runVectorSplit code/doc split in search/investigate.ts).
+   */
+  getAllWithMeta(): EmbeddingWithMeta[] {
+    const rows = this.getAllWithMetaStmt.all() as {
+      chunk_id: number;
+      vector: Buffer;
+      chunk_type: string;
+      file_id: number;
+    }[];
+    const out: EmbeddingWithMeta[] = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const arr = new Float32Array(row.vector.length / 4);
+      const view = new Float32Array(
+        row.vector.buffer,
+        row.vector.byteOffset,
+        row.vector.byteLength / 4,
+      );
+      arr.set(view);
+      out[i] = {
+        chunk_id: row.chunk_id,
+        vector: arr,
+        chunk_type: row.chunk_type,
+        file_id: row.file_id,
+      };
+    }
+    return out;
   }
 
   delete(chunkId: number): void {

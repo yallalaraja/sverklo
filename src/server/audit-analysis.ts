@@ -202,6 +202,11 @@ export function scanSecurity(indexer: IndexFiles & IndexCode & IndexGraph): Secu
   for (const chunk of allChunks) {
     const filePath = chunk.filePath;
 
+    // Skip vendored / cached / generated paths — third-party code is not
+    // our security surface, and benchmark fixtures dominated the audit's
+    // "critical" findings without this filter. (Dogfood T1 2026-05-13.)
+    if (VENDORED_PATH.test(filePath)) continue;
+
     // Skip .env.example files entirely
     if (ENV_EXAMPLE_FILE.test(filePath)) continue;
 
@@ -292,6 +297,26 @@ export function scanSecurity(indexer: IndexFiles & IndexCode & IndexGraph): Secu
 /** Paths that should be excluded from structural analysis (cycles, coupling). */
 const NON_PRODUCTION_PATH =
   /(^|\/)(tests?|__tests__|spec|specs|examples?|benchmarks?|fixtures?|scripts?|docs?|stories)(\/|$)/;
+
+/**
+ * Vendored / generated / cached paths that aren't part of the project's
+ * own source code. Including them tanks the audit signal: a tool running
+ * `sverklo_audit` on its own repo would see Express's HTTP-verb methods
+ * ("get", "post", "json") as top "god nodes" and Express's source files as
+ * top hub files, because they sit inside `benchmark/.cache/`.
+ *
+ * Architectural review 2026-05-13 (Dogfood T1) verified this on sverklo
+ * itself: the audit returned 46 critical security findings — every one
+ * inside `benchmark/.cache/swe/prisma-6.1.0/**`. Default-excluding these
+ * paths is the single most credibility-affecting fix for the audit
+ * surface.
+ */
+const VENDORED_PATH =
+  /(^|\/)(\.cache|node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|\.turbo|coverage|target|vendor|__pycache__|\.venv|venv|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.gradle|\.idea|\.vs|\.vscode-test|cdk\.out)(\/|$)/;
+
+export function isVendoredPath(path: string): boolean {
+  return VENDORED_PATH.test(path);
+}
 
 export function detectCycles(
   files: Array<{ id: number; path: string }>,
@@ -488,7 +513,8 @@ function computeDeadCodePct(indexer: IndexFiles & IndexCode & IndexGraph): {
     (c) =>
       c.name &&
       (c.type === "function" || c.type === "class" || c.type === "method") &&
-      !NON_SHIPPING.test(c.filePath)
+      !NON_SHIPPING.test(c.filePath) &&
+      !VENDORED_PATH.test(c.filePath)
   );
 
   // Detect if this is a library (has exports in package.json or barrel files)
@@ -548,8 +574,23 @@ function computeDeadCodePct(indexer: IndexFiles & IndexCode & IndexGraph): {
 // ─── Main analysis function ───
 
 export function analyzeCodebase(indexer: IndexFiles & IndexCode & IndexGraph): AuditAnalysis {
-  const files = indexer.fileStore.getAll();
-  const edges = indexer.graphStore.getAll();
+  // Default-exclude vendored / cached / generated paths before any
+  // dimension runs. Without this filter, running audit on a repo with
+  // benchmark/.cache or node_modules drowns the signal in third-party
+  // findings (god nodes, hub files, "critical" secrets in test fixtures).
+  // Dogfood T1 fix per architectural review 2026-05-13.
+  const allFiles = indexer.fileStore.getAll();
+  const files = allFiles.filter((f) => !isVendoredPath(f.path));
+  const excludedFileIds = new Set<number>();
+  for (const f of allFiles) {
+    if (isVendoredPath(f.path)) excludedFileIds.add(f.id);
+  }
+  const allEdges = indexer.graphStore.getAll();
+  const edges = allEdges.filter(
+    (e) =>
+      !excludedFileIds.has(e.source_file_id) &&
+      !excludedFileIds.has(e.target_file_id),
+  );
 
   // 1. Security scan
   const securityIssues = scanSecurity(indexer);

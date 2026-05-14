@@ -15,7 +15,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/bin/sverklo.js",
+    "build": "tsc && mkdir -p dist/src/server/assets && cp src/server/assets/*.js dist/src/server/assets/ && chmod +x dist/bin/sverklo.js",
     "dev": "tsc --watch",
     "start": "node dist/bin/sverklo.js",
     "test": "vitest run",

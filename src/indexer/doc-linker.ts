@@ -1,6 +1,6 @@
 import type { ChunkStore } from "../storage/chunk-store.js";
 import type { DocEdgeStore, DocMentionInput } from "../storage/doc-edge-store.js";
-import type { CodeChunk, FileRecord } from "../types/index.js";
+import type { CodeChunk } from "../types/index.js";
 
 // Extract symbol mentions from doc chunks and link them to the symbol graph.
 // Three extractors with decreasing confidence:
@@ -29,13 +29,37 @@ export interface DocLinkResult {
 export function buildDocLinks(
   chunkStore: ChunkStore,
   docEdgeStore: DocEdgeStore,
-  fileCache: Map<number, FileRecord>,
   docChunks: CodeChunk[]
 ): DocLinkResult {
-  // Build the "known top-PR symbols" set for bare-match gating. We walk
-  // files by PageRank order (fileCache is already sorted DESC when built
-  // from fileStore.getAll) and collect chunk names until we hit BARE_TOPN.
-  const knownSymbols = collectTopSymbols(chunkStore, fileCache, BARE_TOPN);
+  // Pre-compute symbol-resolution structures in ONE SQLite scan instead
+  // of N×getByName (LIKE %sym%) per mention + N×getByFile per top file
+  // during knownSymbols collection. On doc-heavy repos this was the
+  // dominant fraction of cold-start. Architectural review 2026-05-13
+  // flagged it as CRITICAL (P3 in the Performance synthesis).
+  //
+  // getAllWithFile returns chunks JOIN files ORDER BY pagerank DESC,
+  // start_line — so a single scan gives us (a) definition lookups
+  // by name for resolveSymbol, and (b) the top-N definitions by
+  // PageRank for the bare-mention gating in extractMentions.
+  const allChunks = chunkStore.getAllWithFile();
+
+  // Index 1: name → definition chunks (highest PageRank first, since
+  // input is already PageRank-sorted). resolveSymbol picks the best
+  // type-ranked candidate from this list.
+  const byName = new Map<string, CodeChunk[]>();
+  // Index 2: top-N definition names by PageRank for bare-mention
+  // gating. Same iteration; populated up to BARE_TOPN unique names.
+  const knownSymbols = new Set<string>();
+
+  for (const c of allChunks) {
+    if (!c.name) continue;
+    if (c.type === "doc_section" || c.type === "doc_code") continue;
+    if (c.name.length < MIN_TOKEN_LEN) continue;
+    const list = byName.get(c.name);
+    if (list) list.push(c);
+    else byName.set(c.name, [c]);
+    if (knownSymbols.size < BARE_TOPN) knownSymbols.add(c.name);
+  }
 
   let mentionsCreated = 0;
   let resolvedCount = 0;
@@ -48,7 +72,7 @@ export function buildDocLinks(
 
     const extracted = extractMentions(doc, knownSymbols);
     for (const { symbol, kind, confidence } of extracted) {
-      const targetChunk = resolveSymbol(chunkStore, symbol);
+      const targetChunk = resolveSymbol(byName, symbol);
       allInputs.push({
         doc_chunk_id: doc.id,
         target_symbol: symbol,
@@ -172,33 +196,13 @@ function splitParagraphs(md: string): string[] {
   return md.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
 }
 
-function collectTopSymbols(
-  chunkStore: ChunkStore,
-  fileCache: Map<number, FileRecord>,
-  limit: number
-): Set<string> {
-  const symbols = new Set<string>();
-  // Iterate files in insertion (i.e. PageRank DESC) order.
-  for (const file of fileCache.values()) {
-    if (symbols.size >= limit) break;
-    for (const chunk of chunkStore.getByFile(file.id)) {
-      if (!chunk.name) continue;
-      if (chunk.type === "doc_section" || chunk.type === "doc_code") continue;
-      if (chunk.name.length < MIN_TOKEN_LEN) continue;
-      symbols.add(chunk.name);
-      if (symbols.size >= limit) break;
-    }
-  }
-  return symbols;
-}
-
-function resolveSymbol(chunkStore: ChunkStore, symbol: string): CodeChunk | null {
-  const candidates = chunkStore.getByName(symbol, 10);
-  // Filter to exact matches only (getByName does a LIKE %%).
-  const exact = candidates.filter(
-    (c) => c.name === symbol && c.type !== "doc_section" && c.type !== "doc_code"
-  );
-  if (exact.length === 0) return null;
+function resolveSymbol(
+  byName: Map<string, CodeChunk[]>,
+  symbol: string,
+): CodeChunk | null {
+  const candidates = byName.get(symbol);
+  if (!candidates || candidates.length === 0) return null;
+  // doc_section/doc_code are already filtered out at index-build time.
   // Prefer definitions (class/function/method/interface/type) over plain
   // variable references.
   const rank = (c: CodeChunk): number => {
@@ -217,8 +221,16 @@ function resolveSymbol(chunkStore: ChunkStore, symbol: string): CodeChunk | null
         return 1;
     }
   };
-  exact.sort((a, b) => rank(b) - rank(a));
-  return exact[0];
+  let best = candidates[0];
+  let bestRank = rank(best);
+  for (let i = 1; i < candidates.length; i++) {
+    const r = rank(candidates[i]);
+    if (r > bestRank) {
+      best = candidates[i];
+      bestRank = r;
+    }
+  }
+  return best;
 }
 
 // Keyword stoplist used for fenced-code extraction. Not exhaustive but
