@@ -73,7 +73,8 @@ if (command && command !== "--help" && command !== "-h") {
     };
 
     // Pass-throughs: subcommands that handle --help themselves.
-    const SELF_HANDLES_HELP = new Set(["prune", "memory"]);
+    // workspace handles subcommand-specific --help (issue #38).
+    const SELF_HANDLES_HELP = new Set(["prune", "memory", "workspace"]);
     if (!SELF_HANDLES_HELP.has(command)) {
       const blurb = HELP_BLURBS[command];
       if (blurb) {
@@ -162,6 +163,45 @@ if (command === "unregister") {
   process.exit(0);
 }
 
+// Issue #37 (HaleTom 2026-05-13): users perceive `sverklo init` as
+// "full re-index every time" because there's no separate command for
+// forcing a rebuild — they end up running init repeatedly when they
+// just want fresh data. `Indexer.index()` is ALREADY incremental
+// (mtime + content-hash skip on unchanged files), but the only way
+// to force a full rebuild today is `rm -rf` of the index directory.
+// `sverklo reindex` makes the force-rebuild path discoverable.
+if (command === "reindex" || command === "re-index") {
+  const positional = args.filter((a) => !a.startsWith("--"));
+  const flags = args.filter((a) => a.startsWith("--"));
+  const projectPath = resolve(positional[1] || process.cwd());
+  const force = flags.includes("--force") || flags.includes("-f");
+
+  const { getProjectConfig } = await import("../src/utils/config.js");
+  const { Indexer } = await import("../src/indexer/indexer.js");
+
+  const config = getProjectConfig(projectPath);
+  const indexer = new Indexer(config);
+
+  if (force) {
+    console.log(`Clearing index at ${projectPath}…`);
+    indexer.clearIndex();
+    console.log("Reindexing from scratch…");
+  } else {
+    console.log(`Reindexing ${projectPath} (incremental — only changed files)…`);
+    console.log("Use --force to clear and rebuild from scratch.");
+  }
+
+  const start = Date.now();
+  await indexer.index();
+  const dur = ((Date.now() - start) / 1000).toFixed(1);
+  const status = indexer.getStatus();
+  console.log("");
+  console.log(`✓ Done in ${dur}s`);
+  console.log(`  ${status.fileCount} files · ${status.chunkCount} chunks`);
+  indexer.close();
+  process.exit(0);
+}
+
 if (command === "list") {
   const { getRegistry, getRegistryPath } = await import("../src/registry/registry.js");
   const repos = getRegistry();
@@ -245,6 +285,113 @@ if (command === "doctor" || command === "diagnose" || command === "check") {
 
 if (command === "workspace") {
   const sub = args[1];
+
+  // Issue #38 (HaleTom 2026-05-13): subcommand-specific --help. The
+  // top-level fallthrough below prints the command list, but until now
+  // `sverklo workspace <subcmd> --help` printed the same generic
+  // blurb. Each subcommand now gets its own usage/example block.
+  const wantsHelp = args.slice(1).some((a) => a === "--help" || a === "-h");
+  if (wantsHelp || sub === "help") {
+    const helpText: Record<string, string> = {
+      init: `sverklo workspace init — Create a cross-repo workspace (YAML)
+
+Usage:
+  sverklo workspace init <name> <path1> [path2 ...]
+
+Args:
+  <name>       Workspace name (alphanumerics, dash, underscore; 1-64 chars).
+  <path...>    One or more project directories to include.
+
+Examples:
+  sverklo workspace init backend ./api ./worker ./shared
+  sverklo workspace init team-platform $PWD/api $PWD/web
+
+Creates ~/.sverklo/workspaces/<name>.yaml. Use \`sverklo workspace
+index <name>\` to scan contracts + dependencies across projects.`,
+
+      status: `sverklo workspace status — Show workspace health
+
+Usage:
+  sverklo workspace status [name]
+
+Args:
+  [name]   Optional workspace name. If omitted, shows all workspaces.
+
+Reports: project paths, last-indexed time, contract counts, edge counts.`,
+
+      index: `sverklo workspace index — Index every project in a workspace
+
+Usage:
+  sverklo workspace index <name>
+
+Args:
+  <name>   Workspace name (must exist; see \`sverklo workspace list\`).
+
+Runs incremental indexing per project. Cross-repo contract extraction
+(GraphQL/OpenAPI/protobuf) runs after each project completes.`,
+
+      create: `sverklo workspace create — Create a workspace (legacy JSON shape)
+
+Usage:
+  sverklo workspace create <name> [path1] [path2] ...
+
+Args:
+  <name>       Workspace name.
+  [paths...]   Project paths. Defaults to current directory if omitted.
+
+Note: \`init\` is the modern equivalent and uses YAML. \`create\` is
+preserved for back-compat with the v0.18 JSON registry.`,
+
+      add: `sverklo workspace add — Add a repo to an existing workspace
+
+Usage:
+  sverklo workspace add <name> [path]
+
+Args:
+  <name>     Workspace name.
+  [path]     Repo path to add. Defaults to current directory.`,
+
+      remove: `sverklo workspace remove — Remove a repo from a workspace
+
+Usage:
+  sverklo workspace remove <name> <path>
+
+Args:
+  <name>     Workspace name.
+  <path>     Repo path to remove.`,
+
+      list: `sverklo workspace list — List all workspaces
+
+Usage:
+  sverklo workspace list
+
+Prints names + repo counts.`,
+
+      show: `sverklo workspace show — Show repos in a workspace
+
+Usage:
+  sverklo workspace show <name>
+
+Args:
+  <name>     Workspace name.`,
+
+      memory: `sverklo workspace memory — Manage cross-repo workspace memory
+
+Usage:
+  sverklo workspace memory <name> list                     List all memories
+  sverklo workspace memory <name> add <content> [--tags T] Add a memory
+  sverklo workspace memory <name> search <query>           Search memories
+  sverklo workspace memory <name> forget <id>              Delete a memory by id
+
+The workspace memory lives at ~/.sverklo/workspaces/<name>/memories.db
+and is shared across every repo in the workspace.`,
+    };
+    if (sub && helpText[sub]) {
+      console.log(helpText[sub]);
+      process.exit(0);
+    }
+    // Fall through to the generic command list below.
+  }
 
   // --- Cross-repo workspace commands (new YAML-based) ---
 
@@ -2293,6 +2440,8 @@ Then restart your AI agent (Claude Code, Cursor, Windsurf, etc.) — sverklo too
 Usage:
   sverklo init               Set up sverklo in your project (.mcp.json + CLAUDE.md)
   sverklo doctor             Diagnose MCP setup issues
+  sverklo reindex [path]     Incremental rebuild of the index (changed files only)
+                             Use --force to clear and rebuild from scratch.
   sverklo [project-path]     Start the MCP server (stdio transport, single project)
   sverklo                    Start in global mode (serves all registered repos)
   sverklo register [path]    Add a directory to the global registry

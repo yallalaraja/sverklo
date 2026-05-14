@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import type { Indexer } from "../../indexer/indexer.js";
+import { isToolEnabled } from "../tool-overrides.js";
 
 // Issue #17: the process-start timestamp. Used to detect whether the
 // sverklo binary on disk has been updated since this MCP server was
@@ -149,27 +150,49 @@ export function handleIndexStatus(indexer: Indexer): string {
   // Tailor to repo state
   const tips: string[] = [];
 
+  // Issue #36 (HaleTom 2026-05-13): only recommend tools that are actually
+  // exposed in the current profile. The user reported sverklo_recall being
+  // hinted while not loaded under SVERKLO_PROFILE=core — a confidence-
+  // erosion bug because the agent then tries a non-existent tool.
+  const has = isToolEnabled;
+
   if (status.fileCount === 0) {
     tips.push("- Index is empty. Wait a moment for initial indexing, then call `sverklo_status` again.");
   } else {
-    tips.push("- **Starting work?** Call `sverklo_overview` to see the top files by PageRank");
-    tips.push("- **Searching for code?** Use `sverklo_search \"natural language query\"` — preferred over Grep");
-    tips.push("- **Refactoring a function?** Call `sverklo_impact \"functionName\"` FIRST to see blast radius");
-    tips.push("- **Need to understand a file?** Call `sverklo_deps path:\"src/foo.ts\"` for its import graph");
+    if (has("sverklo_overview"))
+      tips.push("- **Starting work?** Call `sverklo_overview` to see the top files by PageRank");
+    if (has("sverklo_search"))
+      tips.push("- **Searching for code?** Use `sverklo_search \"natural language query\"` — preferred over Grep");
+    if (has("sverklo_impact"))
+      tips.push("- **Refactoring a function?** Call `sverklo_impact \"functionName\"` FIRST to see blast radius");
+    if (has("sverklo_deps"))
+      tips.push("- **Need to understand a file?** Call `sverklo_deps path:\"src/foo.ts\"` for its import graph");
   }
 
   if (memCount === 0) {
-    tips.push("- **No memories yet.** Use `sverklo_remember` to save decisions, patterns, and preferences");
-    tips.push("  Example: \"We chose Prisma over Drizzle for better TypeScript types\"");
+    if (has("sverklo_remember")) {
+      tips.push("- **No memories yet.** Use `sverklo_remember` to save decisions, patterns, and preferences");
+      tips.push("  Example: \"We chose Prisma over Drizzle for better TypeScript types\"");
+    }
   } else {
-    tips.push("- **Check past decisions** with `sverklo_recall \"what did we decide about X\"` before re-inventing");
-    if (coreMemories.length === 0) {
+    if (has("sverklo_recall"))
+      tips.push("- **Check past decisions** with `sverklo_recall \"what did we decide about X\"` before re-inventing");
+    if (coreMemories.length === 0 && has("sverklo_promote")) {
       tips.push("- No core memories yet. Promote important ones with `sverklo_promote id:<n>` — core memories auto-load each session");
     }
   }
 
-  if (status.fileCount > 20) {
+  if (status.fileCount > 20 && has("sverklo_audit")) {
     tips.push("- **Curious about the whole project?** Run `sverklo_audit` for god nodes, hub files, and dead code candidates");
+  }
+
+  // Inform the user when running on a slim profile so they know WHY
+  // certain capabilities aren't in the recommendations.
+  const profileName = process.env.SVERKLO_PROFILE?.trim().toLowerCase();
+  if (profileName && profileName !== "full") {
+    tips.push(
+      `- _Running under \`SVERKLO_PROFILE=${profileName}\`. Set \`SVERKLO_PROFILE=full\` (or \`lean\` / \`research\`) for memory, audit, and review tools._`,
+    );
   }
 
   parts.push(...tips);

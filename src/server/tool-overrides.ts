@@ -221,3 +221,18 @@ export function applyToolOverrides<T extends ToolLike>(tools: T[]): T[] {
 export function __resetToolOverrideCache(): void {
   cache = null;
 }
+
+/**
+ * Check whether a tool is currently enabled (i.e. visible to the MCP
+ * client) given the current SVERKLO_PROFILE / SVERKLO_DISABLED_TOOLS
+ * environment. Used by sverklo_status to render profile-aware
+ * recommendations — don't suggest tools the user can't call. Issue
+ * #36 (HaleTom 2026-05-13): sverklo_recall hinted while not loaded
+ * under SVERKLO_PROFILE=core.
+ */
+export function isToolEnabled(name: string): boolean {
+  const { disabled, profile } = getCache();
+  if (disabled.has(name)) return false;
+  if (profile && !profile.has(name)) return false;
+  return true;
+}

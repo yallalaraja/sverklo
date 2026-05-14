@@ -77,6 +77,7 @@ import {
 import { responseStore } from "./response-store.js";
 import { listReposTool, handleListRepos } from "./tools/list-repos.js";
 import { IndexerPool } from "../registry/indexer-pool.js";
+import { getRegistry } from "../registry/registry.js";
 import { startHttpServer } from "./http-server.js";
 import { track } from "../telemetry/index.js";
 import { applyToolOverrides } from "./tool-overrides.js";
@@ -862,6 +863,34 @@ export async function startGlobalMcpServer(): Promise<void> {
     let __telemetryOutcome: "ok" | "error" | "timeout" = "ok";
 
     const trace = traceStart(name, (args || {}) as Record<string, unknown>);
+
+    // Issue #39 (HaleTom 2026-05-14): when no repos are registered, the
+    // pool throws "No repositories registered..." which the MCP catch
+    // below converts to `isError: true`. Clients like OpenCode render
+    // that as a generic "Not connected", hiding the actionable
+    // remediation message. For sverklo_status and sverklo_list_repos
+    // specifically, the "no repos" state is NOT an error — it's the
+    // expected first-run state. Return the registration hint as a
+    // normal text response so the agent surfaces it.
+    if (
+      (name === "sverklo_status" || name === "sverklo_list_repos" || name === "get_indexing_status") &&
+      Object.keys(getRegistry()).length === 0
+    ) {
+      void track("tool.call", { tool: name, outcome: "ok", duration_ms: 0 });
+      const cwd = process.cwd();
+      const hintText =
+        "**Sverklo is running, but no project is indexed yet.**\n\n" +
+        "To get started:\n" +
+        "```bash\n" +
+        "# from inside the project directory\n" +
+        "sverklo register .\n\n" +
+        "# or from anywhere\n" +
+        `sverklo register ${cwd}\n` +
+        "```\n\n" +
+        "Then call `sverklo_status` again to see the index. " +
+        "The MCP server picks up new registrations without a restart.";
+      return { content: [{ type: "text" as const, text: hintText }] };
+    }
 
     try {
       const indexer = pool.getIndexer(repoName);
