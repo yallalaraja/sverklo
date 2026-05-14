@@ -9,6 +9,18 @@ export class FileStore {
   private updatePagerankStmt: Database.Statement;
   private getLanguagesStmt: Database.Statement;
 
+  // In-memory snapshot of every getAll() result. The file set turns over
+  // rarely (only on indexer writes), but is read 20+ times per tool
+  // invocation across audit, clusters, wiki, investigate, dependencies,
+  // and find-references. Without this cache, each handler re-scanned the
+  // files table from SQLite — that's full-table reads stacking up on
+  // every warm MCP call.
+  //
+  // Architectural review 2026-05-13 (Perf P7) measured 10-30ms per
+  // affected call. Invalidation is internal: upsert / delete /
+  // updatePagerank null the cache, so the next read repopulates.
+  private cachedAll: FileRecord[] | null = null;
+
   constructor(private db: Database.Database) {
     // INSERT OR REPLACE used to be the implementation here, and it had a
     // silent data-corruption bug: REPLACE deletes the old row before
@@ -60,6 +72,7 @@ export class FileStore {
       sizeBytes,
       Date.now()
     ) as { id: number };
+    this.cachedAll = null;
     return row.id;
   }
 
@@ -68,15 +81,28 @@ export class FileStore {
   }
 
   getAll(): FileRecord[] {
-    return this.getAllStmt.all() as FileRecord[];
+    if (this.cachedAll !== null) return this.cachedAll;
+    this.cachedAll = this.getAllStmt.all() as FileRecord[];
+    return this.cachedAll;
   }
 
   delete(path: string): void {
     this.deleteStmt.run(path);
+    this.cachedAll = null;
   }
 
   updatePagerank(id: number, score: number): void {
     this.updatePagerankStmt.run(score, id);
+    this.cachedAll = null;
+  }
+
+  /**
+   * Drop the snapshot. Call after bulk operations (transactions,
+   * migrations) that mutate the files table without going through the
+   * upsert/delete/updatePagerank methods. Cheap no-op if already null.
+   */
+  invalidateCache(): void {
+    this.cachedAll = null;
   }
 
   getLanguages(): string[] {

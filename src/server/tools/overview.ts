@@ -1,6 +1,7 @@
 import type { IndexFiles } from "../../indexer/index-files.js";
 import { formatOverview, type OverviewEntry } from "../../search/token-budget.js";
 import { resolveBudget } from "../../utils/budget.js";
+import { isVendoredPath } from "../audit-analysis.js";
 
 export const overviewTool = {
   name: "sverklo_overview",
@@ -33,14 +34,36 @@ export function handleOverview(
   indexer: IndexFiles,
   args: Record<string, unknown>
 ): string {
-  const path = args.path as string | undefined;
+  // Normalize the path param: accept "src", "src/", or "./src". Drops
+  // trailing slash, strips leading "./". Without normalization, a user
+  // passing "src/" would match files where the prefix happens to
+  // include a slash but miss files starting at the bare directory
+  // name. Dogfood T4 fix per architectural review 2026-05-13.
+  const rawPath = args.path as string | undefined;
+  const path = rawPath
+    ? rawPath.replace(/^\.\/+/, "").replace(/\/+$/, "")
+    : undefined;
   const tokenBudget = resolveBudget(args, "overview", null, 3000);
 
   const files = indexer.fileStore.getAll(); // already sorted by pagerank DESC
 
   const entries: OverviewEntry[] = [];
   for (const file of files) {
-    if (path && !file.path.startsWith(path)) continue;
+    // Skip vendored / cached / generated paths so the overview reflects
+    // the user's own code, not third-party deps. Same exclusion as
+    // sverklo_audit (Dogfood T1 / T4 in the same review pass).
+    if (isVendoredPath(file.path)) continue;
+    if (path) {
+      // Match "src" against "src/foo.ts" (prefix + boundary) but not
+      // against "src-utils/foo.ts" — require either exact match or
+      // a "/" right after the prefix.
+      if (
+        file.path !== path &&
+        !file.path.startsWith(path + "/")
+      ) {
+        continue;
+      }
+    }
     const chunks = indexer.chunkStore.getByFile(file.id);
     entries.push({ file, chunks });
   }

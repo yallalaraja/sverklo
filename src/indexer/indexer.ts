@@ -203,6 +203,10 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       );
       this.db.exec("DELETE FROM dependencies");
       this.db.exec("UPDATE files SET hash = '', last_modified = 0");
+      // Direct bulk SQL bypasses FileStore.upsert/delete/updatePagerank,
+      // so the in-memory getAll snapshot cache wouldn't auto-invalidate
+      // here. Explicit drop so the next getAll() reflects the migration.
+      this.fileStore.invalidateCache();
     }
 
     setDataVersion(this.db, CURRENT_DATA_VERSION);

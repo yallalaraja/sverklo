@@ -28,6 +28,20 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
   const pending = new Map<string, NodeJS.Timeout>();
   const DEBOUNCE_MS = 500;
 
+  // Serial reindex queue. Without this, a directory rename of N files
+  // fires N debounce timers ~simultaneously, each awaiting its own
+  // indexer.reindexFile() — N concurrent ONNX embedding calls hit the
+  // single embedder session. Architectural review 2026-05-13 (Tier 3.5
+  // / Backend B6) flagged the unbounded concurrency as exactly the
+  // backpressure gap. We serialize through a single Promise chain so
+  // ONNX sees one call at a time but no events are dropped.
+  let queueTail: Promise<void> = Promise.resolve();
+  function enqueueReindex(work: () => Promise<void>): Promise<void> {
+    const next = queueTail.then(work, work);
+    queueTail = next.catch(() => {});
+    return next;
+  }
+
   const watcher = watch(rootPath, {
     ignored: (path: string) => {
       const rel = relForward(rootPath, path);
@@ -60,9 +74,9 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
 
     pending.set(
       "__config__",
-      setTimeout(async () => {
+      setTimeout(() => {
         pending.delete("__config__");
-        await indexer.index();
+        enqueueReindex(() => indexer.index());
       }, DEBOUNCE_MS)
     );
   }
@@ -89,10 +103,10 @@ export function startWatcher(indexer: Indexer, rootPath: string): void {
 
     pending.set(
       rel,
-      setTimeout(async () => {
+      setTimeout(() => {
         pending.delete(rel);
         log(`File changed: ${rel}`);
-        await indexer.reindexFile(rel, absolutePath, lang);
+        enqueueReindex(() => indexer.reindexFile(rel, absolutePath, lang));
       }, DEBOUNCE_MS)
     );
   }
