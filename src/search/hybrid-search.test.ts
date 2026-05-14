@@ -59,6 +59,7 @@ describe("query-shape classifier", () => {
         searchFts: () => [],
         getByFile: () => [],
         getById: () => undefined,
+        getByIds: () => [],
       },
       fileStore: {
         getAll: () => [],
@@ -87,6 +88,7 @@ describe("query-shape classifier", () => {
         searchFts: () => [],
         getByFile: () => [],
         getById: () => undefined,
+        getByIds: () => [],
       },
       fileStore: {
         getAll: () => [],
@@ -118,6 +120,7 @@ describe("query-shape classifier", () => {
         searchFts: () => [],
         getByFile: () => [],
         getById: () => undefined,
+        getByIds: () => [],
       },
       fileStore: {
         getAll: () => [],

@@ -190,9 +190,16 @@ async function rankCandidates(
     }
   }
 
-  // Add chunks from top PageRank files (structurally important), cap total candidates
+  // Add chunks from top PageRank files (structurally important), cap total candidates.
+  // Single fileStore.getAll() scan for both the top-20 PR slice AND the
+  // file lookup map (was called twice on every warm search call before
+  // the 2026-05-13 perf review — P4 in the Performance synthesis).
   const MAX_CANDIDATES = 500;
-  const topFiles = indexer.fileStore.getAll().slice(0, 20); // already sorted by pagerank DESC
+  const allFiles = indexer.fileStore.getAll(); // already sorted by pagerank DESC
+  const fileCache = new Map<number, FileRecord>();
+  for (const f of allFiles) fileCache.set(f.id, f);
+
+  const topFiles = allFiles.slice(0, 20);
   for (const f of topFiles) {
     if (candidateChunkIds.size >= MAX_CANDIDATES) break;
     for (const chunk of indexer.chunkStore.getByFile(f.id)) {
@@ -212,12 +219,6 @@ async function rankCandidates(
   vectorScores.sort((a, b) => b.score - a.score);
   const topVector = vectorScores.slice(0, 50);
 
-  // Build file cache for PageRank lookup
-  const fileCache = new Map<number, FileRecord>();
-  for (const f of indexer.fileStore.getAll()) {
-    fileCache.set(f.id, f);
-  }
-
   // Reciprocal Rank Fusion
   const rrfScores = new Map<number, number>();
 
@@ -235,10 +236,20 @@ async function rankCandidates(
     rrfScores.set(chunkId, (rrfScores.get(chunkId) || 0) + score);
   }
 
+  // Batch-load candidate chunks in ONE SQLite query instead of N
+  // chunkStore.getById point reads. RRF candidate set is bounded by
+  // MAX_CANDIDATES (~500), well within SQLITE_MAX_VARIABLE_NUMBER.
+  // Perf review 2026-05-13 (P4) estimated 30-50ms warm-call win.
+  const candidateIds = Array.from(rrfScores.keys());
+  const chunksById = new Map<number, import("../types/index.js").CodeChunk>();
+  for (const chunk of indexer.chunkStore.getByIds(candidateIds)) {
+    chunksById.set(chunk.id, chunk);
+  }
+
   // Collect candidates with full data
   const candidates: SearchResult[] = [];
   for (const [chunkId, rrfScore] of rrfScores) {
-    const chunk = indexer.chunkStore.getById(chunkId);
+    const chunk = chunksById.get(chunkId);
     if (!chunk) continue;
 
     const file = fileCache.get(chunk.file_id);

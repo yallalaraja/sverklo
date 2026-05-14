@@ -87,6 +87,23 @@ export class ChunkStore {
     return this.getByIdStmt.get(id) as CodeChunk | undefined;
   }
 
+  /**
+   * Batched fetch by a set of chunk ids. Used by hybrid-search to enrich
+   * the RRF candidate set in one query instead of N point reads. The
+   * `WHERE id IN (...)` shape is built dynamically because better-sqlite3
+   * doesn't support array binding; we cap chunk-count at MAX_CANDIDATES
+   * (~500) upstream so the SQL stays well under SQLITE_MAX_VARIABLE_NUMBER.
+   * Returns chunks in arbitrary order — caller is responsible for the
+   * (chunkId → CodeChunk) mapping if ordering matters.
+   */
+  getByIds(ids: number[]): CodeChunk[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    return this.db
+      .prepare(`SELECT * FROM chunks WHERE id IN (${placeholders})`)
+      .all(...ids) as CodeChunk[];
+  }
+
   getByName(namePattern: string, limit: number = 20): CodeChunk[] {
     return this.getByNameStmt.all(`%${namePattern}%`, limit) as CodeChunk[];
   }
