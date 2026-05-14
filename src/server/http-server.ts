@@ -203,25 +203,39 @@ export function startHttpServer(indexer: Indexer, port: number = 3847): void {
           pagerank: r.file.pagerank,
           language: r.file.language,
         })));
-      } else if (url.pathname === "/assets/d3.min.js") {
-        // Vendored d3 (was loaded from cdnjs.cloudflare.com — Security
-        // Engineer review 2026-05-13 flagged that as a 4th network
-        // egress contradicting the "code never leaves the machine"
-        // posture, and CDN compromise → JS execution in the dashboard
-        // origin → /api/file?path=* exfiltration). Now self-hosted.
-        try {
-          const here = dirname(fileURLToPath(import.meta.url));
-          // dev: src/server/assets/  prod: dist/src/server/assets/
-          const assetPath = join(here, "assets", "d3.min.js");
-          const body = readFileSync(assetPath);
-          res.writeHead(200, {
-            "Content-Type": "application/javascript; charset=utf-8",
-            "Cache-Control": "public, max-age=31536000, immutable",
-          });
-          res.end(body);
-        } catch (err) {
-          res.writeHead(500);
-          res.end(`Asset not found: ${(err as Error).message}`);
+      } else if (url.pathname.startsWith("/assets/")) {
+        // Vendored static assets: d3.min.js, dashboard.css, dashboard.js.
+        // Originally d3 was loaded from cdnjs.cloudflare.com (4th egress);
+        // dashboard CSS+JS were inlined in a 1515-line template literal
+        // making CSP tightening impossible. Tier 1.6 + Tier 2.3 of the
+        // 2026-05-13 architectural review moved all three to /assets/
+        // so the same content-type + cache-headers + integrity story
+        // applies uniformly. The allowlist below is intentional —
+        // arbitrary /assets/* paths can't probe the package directory.
+        const allowList: Record<string, string> = {
+          "/assets/d3.min.js": "application/javascript; charset=utf-8",
+          "/assets/dashboard.js": "application/javascript; charset=utf-8",
+          "/assets/dashboard.css": "text/css; charset=utf-8",
+        };
+        const contentType = allowList[url.pathname];
+        if (!contentType) {
+          res.writeHead(404);
+          res.end("Not found");
+        } else {
+          try {
+            const here = dirname(fileURLToPath(import.meta.url));
+            const fileName = url.pathname.replace("/assets/", "");
+            const assetPath = join(here, "assets", fileName);
+            const body = readFileSync(assetPath);
+            res.writeHead(200, {
+              "Content-Type": contentType,
+              "Cache-Control": "public, max-age=31536000, immutable",
+            });
+            res.end(body);
+          } catch (err) {
+            res.writeHead(500);
+            res.end(`Asset not found: ${(err as Error).message}`);
+          }
         }
       } else if (
         url.pathname === "/" ||
@@ -233,15 +247,17 @@ export function startHttpServer(indexer: Indexer, port: number = 3847): void {
         // hit. UX audit P1.
         !url.pathname.startsWith("/api/")
       ) {
-        // Strict CSP: same-origin scripts only, allow inline because
-        // the dashboard's interactive code is currently embedded in the
-        // HTML template (decompose-template work tracked in Tier 2.3).
-        // Once that lands, drop 'unsafe-inline' from script-src.
+        // Strict CSP: same-origin scripts only. Tier 2.3 moved the
+        // dashboard's interactive code into /assets/dashboard.js so
+        // we can drop 'unsafe-inline' from script-src. style-src
+        // keeps 'unsafe-inline' because the font-face block and a
+        // small set of inline style attributes are still inline (and
+        // valuable for flash-free first paint).
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Content-Security-Policy":
             "default-src 'self'; " +
-            "script-src 'self' 'unsafe-inline'; " +
+            "script-src 'self'; " +
             "style-src 'self' 'unsafe-inline'; " +
             "img-src 'self' data:; " +
             "connect-src 'self'; " +

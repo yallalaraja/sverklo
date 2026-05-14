@@ -1,7 +1,7 @@
 {
   "name": "sverklo",
   "mcpName": "io.github.sverklo/sverklo",
-  "version": "0.20.25",
+  "version": "0.20.26",
   "description": "Local-first code intelligence — MCP server for Claude Code, Cursor, Windsurf, Zed. Symbol graph, blast-radius, git-pinned memory. 43× fewer tokens than naive grep on the public bench. MIT, zero-config.",
   "type": "module",
   "bin": {
@@ -12,10 +12,11 @@
     "dist",
     "src/skills/*.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "models.lock.json"
   ],
   "scripts": {
-    "build": "tsc && mkdir -p dist/src/server/assets && cp src/server/assets/*.js dist/src/server/assets/ && chmod +x dist/bin/sverklo.js",
+    "build": "tsc && mkdir -p dist/src/server/assets && cp src/server/assets/* dist/src/server/assets/ && chmod +x dist/bin/sverklo.js",
     "dev": "tsc --watch",
     "start": "node dist/bin/sverklo.js",
     "test": "vitest run",

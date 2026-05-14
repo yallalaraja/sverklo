@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { verifyArtifact } from "../utils/integrity.js";
 
 export interface GrammarSpec {
   /** Language id used by parser-tree-sitter.LANG_MAP. */
@@ -118,6 +119,11 @@ export async function installGrammars(opts: {
       if (buf.length < 1024 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
         throw new Error(`response is not a valid WASM blob (${buf.length} bytes)`);
       }
+      // Integrity check (Tier 3.2 / Security review 2026-05-13). The
+      // 4-byte magic above is shape; this is authenticity. A
+      // compromised CDN-served WASM still starts with \0asm. Lock
+      // entries pin sha256 per filename.
+      verifyArtifact("grammars", g.wasm, buf);
       writeFileSync(out, buf);
       results.push({ lang: g.lang, path: out, status: "fresh", bytes: buf.length });
       opts.onProgress?.(`  ok      ${g.lang}  → ${out} (${(buf.length / 1024).toFixed(0)} KB)`);

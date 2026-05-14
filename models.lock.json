@@ -1,0 +1,46 @@
+{
+  "$comment": "Integrity hashes for every artifact sverklo downloads on first run. Verified by src/indexer/setup.ts and src/indexer/grammars-install.ts before the bytes are written to disk. A CDN compromise or DNS hijack that swaps the upstream artifact will be caught here. Update this file together with the URLs when bumping versions. See Tier 3.2 in the 2026-05-13 architectural review.",
+  "version": 1,
+  "model": {
+    "model.onnx": {
+      "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
+      "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+      "bytes": 90405214
+    },
+    "tokenizer.json": {
+      "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+      "sha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+      "bytes": 466247
+    }
+  },
+  "grammars": {
+    "tree-sitter-typescript.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-typescript@0.23.2/tree-sitter-typescript.wasm",
+      "sha256": "778025db5a8be0e70f8ccc3671e486dfeddd048c25d9e8a70c26de2e1bf6f97d"
+    },
+    "tree-sitter-tsx.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-typescript@0.23.2/tree-sitter-tsx.wasm",
+      "sha256": "79e5da75ea62855a0cd67177685f0164eac87d5f630b3cbe1e0a099751ad30f8"
+    },
+    "tree-sitter-javascript.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-javascript@0.23.1/tree-sitter-javascript.wasm",
+      "sha256": "4a378293fe7853cbee2836023be072dafa0e53b3b5edb245920838ca834ed121"
+    },
+    "tree-sitter-python.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-python@0.23.6/tree-sitter-python.wasm",
+      "sha256": "8c93692fb368e288a5824cee55773c9b3602804f513bda48c97661e52e9c2da2"
+    },
+    "tree-sitter-go.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-go@0.23.4/tree-sitter-go.wasm",
+      "sha256": "6dfc8eacdad0a54d0cad0d888851bd19cdd14d82582f110f888bbf6f9e5e2d64"
+    },
+    "tree-sitter-rust.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-rust@0.23.2/tree-sitter-rust.wasm",
+      "sha256": "29e9f01adeff09377b8dc8f82b655348fc15649194e64fe4921c181ee1fd1163"
+    },
+    "tree-sitter-c_sharp.wasm": {
+      "url": "https://cdn.jsdelivr.net/npm/tree-sitter-c-sharp@0.23.5/tree-sitter-c_sharp.wasm",
+      "sha256": "6f69e1cae44e1c32c1eccc170dc5a9778fb94ff716f71113fe1f8c4299aa2f40"
+    }
+  }
+}

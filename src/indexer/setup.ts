@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { log, logError } from "../utils/logger.js";
+import { verifyArtifact } from "../utils/integrity.js";
 
 const MODEL_DIR = join(homedir(), ".sverklo", "models");
 const MODEL_URL =
@@ -31,9 +32,13 @@ export async function setupModels(): Promise<void> {
     const resp = await fetch(MODEL_URL);
     if (!resp.ok) throw new Error(`Failed to download model: ${resp.status}`);
     const buffer = Buffer.from(await resp.arrayBuffer());
+    // Integrity check (Tier 3.2 / Security review 2026-05-13). Throws
+    // with a clear remediation message on hash mismatch — refusing to
+    // write attacker bytes is the whole point of the lock file.
+    verifyArtifact("model", "model.onnx", buffer);
     const { writeFileSync } = await import("node:fs");
     writeFileSync(modelPath, buffer);
-    console.error("  model.onnx downloaded");
+    console.error("  model.onnx downloaded (integrity verified)");
   }
 
   if (!existsSync(tokenizerPath)) {
@@ -41,9 +46,11 @@ export async function setupModels(): Promise<void> {
     const resp = await fetch(TOKENIZER_URL);
     if (!resp.ok) throw new Error(`Failed to download tokenizer: ${resp.status}`);
     const text = await resp.text();
+    const buffer = Buffer.from(text, "utf-8");
+    verifyArtifact("model", "tokenizer.json", buffer);
     const { writeFileSync } = await import("node:fs");
     writeFileSync(tokenizerPath, text);
-    console.error("  tokenizer.json downloaded");
+    console.error("  tokenizer.json downloaded (integrity verified)");
   }
 
   console.error("Setup complete! Models saved to", MODEL_DIR);
