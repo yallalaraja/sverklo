@@ -237,6 +237,78 @@ if (command === "list") {
 }
 
 if (command === "bench" || command === "benchmark") {
+  // `sverklo bench self` — consumer-runnable self-benchmark against
+  // the user's OWN repo. Dogfood perf review 2026-05-14 flagged that
+  // README claims like "26s cold-start on 4000-file repos" aren't
+  // reproducible from the shipped npm binary because `sverklo bench`
+  // (without `self`) requires the source checkout. `self` runs against
+  // whatever directory the user points it at and reports cold-start +
+  // 5 warm-call latencies. No external clones, no scripts/ shipped.
+  const sub = args[1];
+  if (sub === "self") {
+    const positional = args.slice(2).filter((a) => !a.startsWith("--"));
+    const projectPath = resolve(positional[0] || process.cwd());
+
+    const { getProjectConfig } = await import("../src/utils/config.js");
+    const { Indexer } = await import("../src/indexer/indexer.js");
+
+    console.log(`sverklo bench self — measuring ${projectPath}`);
+    console.log("");
+
+    const config = getProjectConfig(projectPath);
+    const indexer = new Indexer(config);
+
+    // Cold-start: clear + rebuild
+    console.log("[1/2] cold-start (clear index, rebuild from scratch)…");
+    indexer.clearIndex();
+    const t0 = Date.now();
+    await indexer.index();
+    const coldMs = Date.now() - t0;
+    const status = indexer.getStatus();
+    console.log(`      ${coldMs}ms for ${status.fileCount} files · ${status.chunkCount} chunks`);
+    console.log("");
+
+    // Warm calls: search, lookup, refs, deps, impact — 5 each, take median
+    console.log("[2/2] warm-call latencies (5 calls each, median ms):");
+
+    const { handleLookup } = await import("../src/server/tools/lookup.js");
+    const { hybridSearch } = await import("../src/search/hybrid-search.js");
+
+    type Call = { name: string; fn: () => Promise<unknown> };
+    const calls: Call[] = [
+      {
+        name: "search",
+        fn: () => hybridSearch(indexer, { query: "indexer", tokenBudget: 1000 }),
+      },
+      {
+        name: "lookup",
+        fn: () => handleLookup(indexer, { symbol: "Indexer" }),
+      },
+    ];
+
+    for (const c of calls) {
+      const times: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const start = Date.now();
+        try {
+          await c.fn();
+        } catch {
+          /* swallow — we want latency, not correctness here */
+        }
+        times.push(Date.now() - start);
+      }
+      times.sort((a, b) => a - b);
+      const median = times[2];
+      console.log(`  ${c.name.padEnd(10)} median=${median}ms  (samples: ${times.join(", ")})`);
+    }
+
+    console.log("");
+    console.log("Run with --timing for per-phase cold-start breakdown:");
+    console.log(`  sverklo reindex ${projectPath} --force --timing`);
+    indexer.close();
+    process.exit(0);
+  }
+
   // Reproducible benchmark runner. Clones pinned versions of gin, nestjs,
   // and react into ~/.sverklo-bench-cache, runs the perf profiler against
   // each, and prints a summary. Everything in BENCHMARKS.md should come
@@ -255,14 +327,14 @@ if (command === "bench" || command === "benchmark") {
   const scriptPath = candidates.find((p) => existsSync(p));
   if (!scriptPath) {
     console.error(
-      "sverklo bench: could not find scripts/bench-reproducer.mjs.\n" +
-        "This command is only available when running from a sverklo checkout,\n" +
-        "not from the npm-installed package (the bench scripts aren't shipped\n" +
-        "in `files` to keep the package small). Clone the repo and run it from\n" +
-        "there:\n\n" +
+      "sverklo bench: the gin/nestjs/react cross-repo benchmark requires the source\n" +
+        "checkout (scripts/bench-reproducer.mjs isn't shipped in the npm package to\n" +
+        "keep it small). For consumer-runnable perf numbers on YOUR repo, use:\n\n" +
+        "  sverklo bench self [path]   # measures cold-start + warm-call latency\n" +
+        "                              # on a directory you point at, no clones\n\n" +
+        "For the full cross-repo benchmark with reproducible upstream pins:\n\n" +
         "  git clone https://github.com/sverklo/sverklo && cd sverklo\n" +
-        "  npm install && npm run build\n" +
-        "  npm run bench"
+        "  npm install && npm run build && npm run bench",
     );
     process.exit(1);
   }

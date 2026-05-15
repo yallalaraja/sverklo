@@ -20,6 +20,12 @@ export class FileStore {
   // affected call. Invalidation is internal: upsert / delete /
   // updatePagerank null the cache, so the next read repopulates.
   private cachedAll: FileRecord[] | null = null;
+  // Cache hit/miss counters surfaced via getCacheStats() — used by
+  // sverklo_status to give the user concrete evidence the cache is
+  // doing its job. Dogfood perf review 2026-05-14 flagged the
+  // observability gap: "cannot directly observe cache hits."
+  private cacheHits = 0;
+  private cacheMisses = 0;
 
   constructor(private db: Database.Database) {
     // INSERT OR REPLACE used to be the implementation here, and it had a
@@ -128,9 +134,26 @@ export class FileStore {
   }
 
   getAll(): FileRecord[] {
-    if (this.cachedAll !== null) return this.cachedAll;
+    if (this.cachedAll !== null) {
+      this.cacheHits++;
+      return this.cachedAll;
+    }
+    this.cacheMisses++;
     this.cachedAll = this.getAllStmt.all() as FileRecord[];
     return this.cachedAll;
+  }
+
+  /**
+   * Return cache hit/miss counters so sverklo_status can surface them.
+   * Hit rate = hits / (hits + misses) is the most actionable single
+   * number — high rate means the cache is doing its job; near-zero
+   * means callers are invalidating it too aggressively (or the cache
+   * isn't being reached because of architecture above it).
+   */
+  getCacheStats(): { hits: number; misses: number; hitRate: number } {
+    const total = this.cacheHits + this.cacheMisses;
+    const hitRate = total === 0 ? 0 : this.cacheHits / total;
+    return { hits: this.cacheHits, misses: this.cacheMisses, hitRate };
   }
 
   delete(path: string): void {

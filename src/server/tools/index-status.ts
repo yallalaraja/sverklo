@@ -262,6 +262,24 @@ export function handleIndexStatus(indexer: Indexer): string {
     parts.push("");
   }
 
+  // ─── Cache observability (Dogfood perf review 2026-05-14) ───
+  // Surfaces the FileStore hit-rate so users can verify the v0.20.24
+  // snapshot cache is actually working. The agent flagged the
+  // observability gap ("cannot directly observe cache hits").
+  // Only printed under SVERKLO_DEBUG=1 — too noisy for the default
+  // status output, but accessible when investigating perf.
+  if (process.env.SVERKLO_DEBUG === "1") {
+    const cacheStats = indexer.fileStore.getCacheStats();
+    if (cacheStats.hits + cacheStats.misses > 0) {
+      parts.push("");
+      parts.push(`## Cache stats`);
+      parts.push(
+        `- FileStore.getAll: ${cacheStats.hits} hits / ${cacheStats.misses} misses ` +
+          `(${Math.round(cacheStats.hitRate * 100)}% hit rate)`,
+      );
+    }
+  }
+
   // ─── Performance reminder ───
   parts.push(`_Use sverklo for exploratory work, refactor blast-radius, and semantic queries. Use Grep/Read for exact-match lookups and focused diff review._`);
 
