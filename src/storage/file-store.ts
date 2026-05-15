@@ -94,22 +94,36 @@ export class FileStore {
    */
   findByPath(path: string): FileRecord | undefined {
     if (!path) return undefined;
+    // Reject pathological inputs early. Anything over a couple hundred
+    // chars isn't a real path — likely a probe or accident.
+    if (path.length > 1024) return undefined;
     const direct = this.getByPath(path);
     if (direct) return direct;
 
-    const trimmed = path.replace(/^\.\/+/, "");
+    const trimmed = path.replace(/^\.\/+/, "").replace(/\/+$/, "");
     if (trimmed !== path) {
       const hit = this.getByPath(trimmed);
       if (hit) return hit;
     }
 
-    // Suffix match for project-prefixed inputs. SQLite glob is faster
-    // than a JS scan over getAll(); we anchor on `*/<suffix>` so
-    // "src/foo.ts" doesn't match "barsrc/foo.ts".
-    const suffix = `*/${trimmed}`;
+    // Try as a project-prefixed path (e.g. "myrepo/src/foo.ts" against
+    // an index that stores "src/foo.ts"). We use a LIKE query with an
+    // explicit escape character because SQLite GLOB treats `*`, `?`,
+    // `[`, `]` as wildcards in BOUND parameters — passing user input
+    // verbatim as a GLOB pattern is a wildcard-injection sink that
+    // lets `path=*` enumerate every file in the index. Dogfood security
+    // review 2026-05-14 (Issue A) flagged this against v0.20.25's
+    // original GLOB implementation.
+    //
+    // LIKE with `ESCAPE '\'`:
+    //   - escape `% _ \` in the user input so they're literal
+    //   - construct the pattern `%/<escaped>` so the slash-prefix
+    //     match is enforced
+    const escapedSuffix = trimmed.replace(/[\\%_]/g, "\\$&");
+    const pattern = `%/${escapedSuffix}`;
     const row = this.db
-      .prepare("SELECT * FROM files WHERE path GLOB ? LIMIT 1")
-      .get(suffix) as FileRecord | undefined;
+      .prepare("SELECT * FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT 1")
+      .get(pattern) as FileRecord | undefined;
     return row;
   }
 

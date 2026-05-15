@@ -81,8 +81,32 @@ export class SymbolRefStore {
    * from one file is less interesting structurally than one referenced
    * 30 times across 30 different files. Dogfood T2 from the 2026-05-13
    * architectural review.
+   *
+   * `excludeFileIds` optionally excludes refs whose SOURCE file is in
+   * the provided set — used by sverklo_audit to drop test-file and
+   * vendored-cache refs from the count so identifier collisions like
+   * `parse` (mostly JSON.parse + test helpers) don't dominate the
+   * ranking. Dogfood review 2026-05-14 (Issue E).
    */
-  getGodNodeStats(): { target_name: string; ref_count: number; distinct_source_files: number }[] {
+  getGodNodeStats(
+    excludeFileIds?: Set<number>,
+  ): { target_name: string; ref_count: number; distinct_source_files: number }[] {
+    if (!excludeFileIds || excludeFileIds.size === 0) {
+      return this.db
+        .prepare(
+          `SELECT sr.target_name,
+                  COUNT(*)                       AS ref_count,
+                  COUNT(DISTINCT c.file_id)      AS distinct_source_files
+           FROM symbol_refs sr
+           JOIN chunks c ON c.id = sr.source_chunk_id
+           GROUP BY sr.target_name`,
+        )
+        .all() as { target_name: string; ref_count: number; distinct_source_files: number }[];
+    }
+    // SQLite has SQLITE_MAX_VARIABLE_NUMBER (~32k); our exclude sets
+    // are typically <2k vendored/test files. Build IN-clause inline.
+    const ids = Array.from(excludeFileIds);
+    const placeholders = ids.map(() => "?").join(",");
     return this.db
       .prepare(
         `SELECT sr.target_name,
@@ -90,9 +114,10 @@ export class SymbolRefStore {
                 COUNT(DISTINCT c.file_id)      AS distinct_source_files
          FROM symbol_refs sr
          JOIN chunks c ON c.id = sr.source_chunk_id
+         WHERE c.file_id NOT IN (${placeholders})
          GROUP BY sr.target_name`,
       )
-      .all() as { target_name: string; ref_count: number; distinct_source_files: number }[];
+      .all(...ids) as { target_name: string; ref_count: number; distinct_source_files: number }[];
   }
 
   getAll(): SymbolRef[] {

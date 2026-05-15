@@ -123,7 +123,12 @@ export async function installGrammars(opts: {
       // 4-byte magic above is shape; this is authenticity. A
       // compromised CDN-served WASM still starts with \0asm. Lock
       // entries pin sha256 per filename.
-      verifyArtifact("grammars", g.wasm, buf);
+      // strict + allowMissingLock:false: refuse to write if lock is
+      // missing (Dogfood review 2026-05-14, Issue B).
+      verifyArtifact("grammars", g.wasm, buf, {
+        strict: true,
+        allowMissingLock: false,
+      });
       writeFileSync(out, buf);
       results.push({ lang: g.lang, path: out, status: "fresh", bytes: buf.length });
       opts.onProgress?.(`  ok      ${g.lang}  → ${out} (${(buf.length / 1024).toFixed(0)} KB)`);

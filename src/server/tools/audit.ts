@@ -33,11 +33,23 @@ interface GodNode {
 
 export function handleAudit(indexer: IndexFiles & IndexCode & IndexGraph & IndexMemory, args: Record<string, unknown>): string {
   const tokenBudget = resolveBudget(args, "audit", null, 4000);
-  const files = indexer.fileStore.getAll();
+  // Default-exclude vendored / cached / generated paths from EVERY
+  // audit dimension. Without this, running sverklo_audit against a
+  // workspace whose index includes `<repo>/benchmark/.cache/<vendor>`
+  // bubbled third-party HTTP-verb methods to the top of the god-node
+  // ranking and made every hub file an express dependency. Dogfood
+  // review 2026-05-14 (Issue D): the v0.20.22 filter was applied in
+  // some dimensions but skipped at this top-level fileStore.getAll(),
+  // so hub-files and the orphan denominator still saw vendored code.
+  const allFiles = indexer.fileStore.getAll();
+  const files = allFiles.filter((f) => !isVendoredPath(f.path));
   const chunkCount = indexer.chunkStore.count();
   const symbolRefCount = indexer.symbolRefStore.count();
 
-  // Get all named chunks once (used by god nodes + orphans)
+  // Get all named chunks once (used by god nodes + orphans).
+  // Vendored chunks are kept here because some helpers below need the
+  // full set; downstream filters drop them before they reach the
+  // user-visible output.
   const allChunks = indexer.chunkStore.getAllWithFile();
 
   // ─── God nodes: symbols with the highest structural blast radius ───
@@ -57,7 +69,23 @@ export function handleAudit(indexer: IndexFiles & IndexCode & IndexGraph & Index
   // Plus we restrict to symbols whose definitions are in NON-vendored
   // project files. Without that, methods on Express's HTTP verb
   // primitives would top the chart on any repo that depended on Express.
-  const godStats = indexer.symbolRefStore.getGodNodeStats();
+  //
+  // Dogfood review 2026-05-14 (Issue E): the ref-count itself was
+  // inflated by test helpers and vendored code. `parse` ranked #1
+  // because most of its refs were `JSON.parse(...)` calls and
+  // `parser-*.test.ts:4` test imports — not because anything in the
+  // user's project depends on a symbol named `parse`. We now exclude
+  // refs whose SOURCE file is vendored OR a test file, so the count
+  // reflects production-code blast radius only.
+  const TEST_PATH =
+    /(^|\/)(__tests__|tests?|spec|specs|fixtures?)(\/|$)|\.(test|spec)\.[cm]?[tj]sx?$|_test\.(go|py|rb|rs)$/;
+  const excludeFileIds = new Set<number>();
+  for (const f of allFiles) {
+    if (isVendoredPath(f.path) || TEST_PATH.test(f.path)) {
+      excludeFileIds.add(f.id);
+    }
+  }
+  const godStats = indexer.symbolRefStore.getGodNodeStats(excludeFileIds);
 
   // For each name, find a non-vendored definition. If a name is ONLY
   // defined in vendored paths (e.g. benchmark/.cache/express/lib/router.js),

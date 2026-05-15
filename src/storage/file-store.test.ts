@@ -76,3 +76,67 @@ describe("FileStore.upsert preserves dependency edges across re-index", () => {
     expect(row?.size_bytes).toBe(9999);
   });
 });
+
+// Security regression test for the SQL wildcard injection issue
+// surfaced by the 2026-05-14 dogfood review. findByPath() previously
+// used `WHERE path GLOB ?`, where `*`, `?`, `[...]` in the BOUND
+// parameter were interpreted as wildcards. A caller passing
+// `path: "*"` could enumerate every indexed file; `path: "[abc]*.ts"`
+// could enumerate files by leading letter. Reachable via the HTTP
+// /api/file route + every sverklo MCP tool that flows user-supplied
+// path into findByPath (deps, refs, impact).
+describe("FileStore.findByPath wildcard-injection hardening", () => {
+  let db: Database.Database;
+  let fileStore: FileStore;
+
+  beforeEach(() => {
+    db = createDatabase(":memory:");
+    fileStore = new FileStore(db);
+    fileStore.upsert("repo/src/alpha.ts", "typescript", "h1", 1, 100);
+    fileStore.upsert("repo/src/beta.ts", "typescript", "h2", 2, 200);
+    fileStore.upsert("other/src/gamma.ts", "typescript", "h3", 3, 300);
+  });
+
+  it("treats `*` as a literal, not a wildcard", () => {
+    // Used to return the first row in the table via GLOB '*/*'
+    // → enumeration. Must now return undefined (no file literally
+    // named '*').
+    expect(fileStore.findByPath("*")).toBeUndefined();
+    expect(fileStore.findByPath("**")).toBeUndefined();
+  });
+
+  it("treats `?` as a literal, not a single-char wildcard", () => {
+    expect(fileStore.findByPath("?lpha.ts")).toBeUndefined();
+  });
+
+  it("treats `[]` brackets as literal characters", () => {
+    expect(fileStore.findByPath("[abc]*.ts")).toBeUndefined();
+    expect(fileStore.findByPath("[!a-z]*.ts")).toBeUndefined();
+  });
+
+  it("treats LIKE special chars `%` and `_` as literals too", () => {
+    // Defense in depth — even though we switched away from GLOB,
+    // verify the LIKE escape works.
+    expect(fileStore.findByPath("%")).toBeUndefined();
+    expect(fileStore.findByPath("_")).toBeUndefined();
+    expect(fileStore.findByPath("repo/src/_lpha.ts")).toBeUndefined();
+  });
+
+  it("still resolves a project-prefixed path (the feature this enables)", () => {
+    // The whole point of the lenient lookup: "myproject/src/foo.ts"
+    // resolves against an index storing "src/foo.ts" (or vice versa).
+    expect(fileStore.findByPath("src/alpha.ts")?.path).toBe("repo/src/alpha.ts");
+    expect(fileStore.findByPath("alpha.ts")?.path).toBe("repo/src/alpha.ts");
+  });
+
+  it("does not match across path boundaries", () => {
+    // "lpha.ts" should NOT match "alpha.ts" — the suffix needs a
+    // "/" boundary in front. Otherwise "foo.ts" matches "barfoo.ts".
+    expect(fileStore.findByPath("lpha.ts")).toBeUndefined();
+  });
+
+  it("rejects pathological inputs cheaply", () => {
+    const huge = "a/".repeat(800) + "z.ts";
+    expect(fileStore.findByPath(huge)).toBeUndefined();
+  });
+});

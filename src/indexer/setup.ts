@@ -35,7 +35,17 @@ export async function setupModels(): Promise<void> {
     // Integrity check (Tier 3.2 / Security review 2026-05-13). Throws
     // with a clear remediation message on hash mismatch — refusing to
     // write attacker bytes is the whole point of the lock file.
-    verifyArtifact("model", "model.onnx", buffer);
+    //
+    // strict + allowMissingLock:false means: refuse to write if the
+    // lock file is missing, not just soft-warn. The npm package ships
+    // models.lock.json in `files`; a missing lock indicates a packaging
+    // accident or tampering. Dogfood review 2026-05-14 (Issue B)
+    // flagged the soft-warn default as a HIGH regression of the
+    // pinning promise.
+    verifyArtifact("model", "model.onnx", buffer, {
+      strict: true,
+      allowMissingLock: false,
+    });
     const { writeFileSync } = await import("node:fs");
     writeFileSync(modelPath, buffer);
     console.error("  model.onnx downloaded (integrity verified)");
@@ -47,7 +57,10 @@ export async function setupModels(): Promise<void> {
     if (!resp.ok) throw new Error(`Failed to download tokenizer: ${resp.status}`);
     const text = await resp.text();
     const buffer = Buffer.from(text, "utf-8");
-    verifyArtifact("model", "tokenizer.json", buffer);
+    verifyArtifact("model", "tokenizer.json", buffer, {
+      strict: true,
+      allowMissingLock: false,
+    });
     const { writeFileSync } = await import("node:fs");
     writeFileSync(tokenizerPath, text);
     console.error("  tokenizer.json downloaded (integrity verified)");

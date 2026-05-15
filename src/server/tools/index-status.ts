@@ -1,4 +1,6 @@
-import { statSync } from "node:fs";
+import { statSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Indexer } from "../../indexer/indexer.js";
 import { isToolEnabled } from "../tool-overrides.js";
 
@@ -10,30 +12,78 @@ import { isToolEnabled } from "../tool-overrides.js";
 const PROCESS_START_MS = Date.now() - Math.round(process.uptime() * 1000);
 
 /**
- * True if the sverklo binary on disk is newer than our process start.
- * Zero network, single stat() call, cached per-session because we
- * check it on every status call.
+ * True if the sverklo binary on disk is newer than our process start
+ * AND the on-disk version differs from the running version.
+ *
+ * The mtime-only check used to fire after every `npm run build`, even
+ * when the rebuild was a no-op or the version was unchanged — annoying
+ * the user on every status call without a real "you should restart"
+ * signal. Dogfood review 2026-05-14 (Issue H) flagged this. Now we
+ * require BOTH (a) on-disk newer than process start AND (b) on-disk
+ * package.json version differs from this process's version. If
+ * versions match, the rebuild is a no-op from the user's perspective
+ * and the warning would just create noise.
+ *
+ * Zero network, two stat()s and at most one readFileSync per minute,
+ * cached per-session.
  */
 let cachedStaleCheck: { ts: number; stale: boolean } | null = null;
+let runningVersion: string | null = null;
+
+function readPackageVersion(packageJsonPath: string): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    return typeof pkg.version === "string" ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
+
+function getRunningVersion(): string | null {
+  if (runningVersion !== null) return runningVersion;
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // dist/src/server/tools/index-status.js → ../../../../package.json
+    for (const rel of ["..", "../..", "../../..", "../../../.."]) {
+      const candidate = join(here, rel, "package.json");
+      const v = readPackageVersion(candidate);
+      if (v) {
+        runningVersion = v;
+        return v;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 function isBinaryStale(): boolean {
   const now = Date.now();
   if (cachedStaleCheck && now - cachedStaleCheck.ts < 60_000) {
     return cachedStaleCheck.stale;
   }
   try {
-    // process.argv[1] is the running script path — for sverklo this
-    // is usually dist/bin/sverklo.js or a symlink target. stat resolves
-    // the symlink so we see the actual binary's mtime.
     const binPath = process.argv[1];
     if (!binPath) {
       cachedStaleCheck = { ts: now, stale: false };
       return false;
     }
     const mtime = statSync(binPath).mtimeMs;
-    // If the binary was modified after this process started, we're
-    // running stale code. Small fudge factor (5s) for clock drift on
-    // file systems with low mtime resolution.
-    const stale = mtime > PROCESS_START_MS + 5000;
+    const mtimeIsNewer = mtime > PROCESS_START_MS + 5000;
+    if (!mtimeIsNewer) {
+      cachedStaleCheck = { ts: now, stale: false };
+      return false;
+    }
+    // mtime says rebuilt — but is the VERSION different? Read the
+    // on-disk package.json and compare. Same version → user just
+    // rebuilt without a release bump; no need to nag them about it.
+    const here = dirname(binPath);
+    let onDiskVersion: string | null = null;
+    for (const rel of ["..", "../..", "../../.."]) {
+      const v = readPackageVersion(join(here, rel, "package.json"));
+      if (v) { onDiskVersion = v; break; }
+    }
+    const running = getRunningVersion();
+    const stale = onDiskVersion !== null && running !== null && onDiskVersion !== running;
     cachedStaleCheck = { ts: now, stale };
     return stale;
   } catch {
@@ -64,14 +114,16 @@ export function handleIndexStatus(indexer: Indexer): string {
   const parts: string[] = [];
 
   // Issue #17: warn loudly if the user upgraded sverklo on disk but
-  // is still running the old binary in this MCP session. Placed at
-  // the very top of the output because it changes the user's next
-  // action ("restart your IDE").
+  // is still running the old binary in this MCP session. Suppressed
+  // when the on-disk version matches the running version (Dogfood
+  // review 2026-05-14, Issue H). Includes both versions so the user
+  // sees exactly which upgrade is pending.
   if (isBinaryStale()) {
+    const running = getRunningVersion() ?? "unknown";
     parts.push(
-      "⚠️ **Sverklo binary on disk is newer than the running process.** " +
-        "You upgraded sverklo but this MCP server is still running the old code. " +
-        "**Restart your IDE** (or the MCP client) to load the new binary."
+      `⚠️ **Sverklo upgraded on disk — restart your IDE.** ` +
+        `This process: v${running}. The new binary won't load until the ` +
+        `MCP server restarts (close + reopen your IDE).`,
     );
     parts.push("");
   }

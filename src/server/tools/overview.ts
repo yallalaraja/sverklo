@@ -54,15 +54,22 @@ export function handleOverview(
     // sverklo_audit (Dogfood T1 / T4 in the same review pass).
     if (isVendoredPath(file.path)) continue;
     if (path) {
-      // Match "src" against "src/foo.ts" (prefix + boundary) but not
-      // against "src-utils/foo.ts" — require either exact match or
-      // a "/" right after the prefix.
-      if (
-        file.path !== path &&
-        !file.path.startsWith(path + "/")
-      ) {
-        continue;
-      }
+      // Match `path` against `file.path` in three positions:
+      //   1. exact match:       file.path === "src"
+      //   2. prefix:            file.path starts with "src/"
+      //   3. embedded segment:  file.path contains "/src/"
+      //
+      // The embedded form handles multi-repo MCP mode where the
+      // global registry stores files as "<repo>/src/foo.ts" — without
+      // it, `sverklo_overview path:"src"` returns empty when the
+      // server is bound to the parent of the project (the multi-repo
+      // workspace shape). Dogfood review 2026-05-14 (Issue C) caught
+      // this as a regression of the v0.20.24 T4 fix in workspace mode.
+      const isMatch =
+        file.path === path ||
+        file.path.startsWith(path + "/") ||
+        file.path.includes("/" + path + "/");
+      if (!isMatch) continue;
     }
     const chunks = indexer.chunkStore.getByFile(file.id);
     entries.push({ file, chunks });

@@ -203,7 +203,7 @@ export async function handleContext(
     const top = topResults[0];
     if (top.chunk.name) {
       parts.push(`- \`sverklo_refs symbol:"${top.chunk.name}"\` to see who uses the most relevant symbol`);
-      parts.push(`- \`sverklo_lookup name:"${top.chunk.name}"\` for the full definition`);
+      parts.push(`- \`sverklo_lookup symbol:"${top.chunk.name}"\` for the full definition`);
     }
   }
   parts.push(`- \`sverklo_search query:"<more specific term>"\` to drill into a sub-area`);
@@ -408,7 +408,7 @@ async function buildPrunedRepoMap(
   );
   if (filesRendered > 0) {
     parts.push(
-      "_Use `sverklo_lookup name:<symbol>` or `sverklo_search query:<...>` to drill into any symbol._"
+      "_Use `sverklo_lookup symbol:<symbol>` or `sverklo_search query:<...>` to drill into any symbol._"
     );
   }
 

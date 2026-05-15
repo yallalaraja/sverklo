@@ -145,7 +145,7 @@ export class HintEngine {
       case "sverklo_impact":
       case "sverklo_refs": {
         const sym = (args.symbol as string) || (args.name as string) || "<name>";
-        out.push(`Call \`sverklo_lookup name:"${sym}"\` to see the definition you're tracing.`);
+        out.push(`Call \`sverklo_lookup symbol:"${sym}"\` to see the definition you're tracing.`);
         if (intent === "reviewing-diff") {
           out.push(`Each caller listed needs to be updated in the same diff if you removed the symbol.`);
         }
