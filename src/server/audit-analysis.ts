@@ -616,7 +616,12 @@ export function analyzeCodebase(indexer: IndexFiles & IndexCode & IndexGraph): A
       name: "Dead code",
       grade: dcGrade,
       score: GRADE_VALUES[dcGrade],
-      detail: `${Math.round(deadCodePct)}% orphan symbols (${orphanCount}/${totalCount})`,
+      // Clarify the denominator. `totalCount` is the population we check
+      // for orphans: production-path functions/classes/methods only.
+      // Without this label, users compare the denominator to the
+      // "X symbols extracted" overview line and assume a discrepancy.
+      // Dogfood review 2026-05-14 (Issue I — denominator clarity).
+      detail: `${Math.round(deadCodePct)}% orphan symbols (${orphanCount}/${totalCount} candidate functions/classes/methods in production paths)`,
     },
     {
       name: "Circular deps",

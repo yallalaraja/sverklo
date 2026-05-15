@@ -9,6 +9,18 @@ export function log(msg: string, ...args: unknown[]): void {
   }
 }
 
+/**
+ * Always-on telemetry/timing line. Used by --timing flag on
+ * `sverklo reindex` so users get phase breakdowns without
+ * also opting into the noisy SVERKLO_DEBUG firehose. Dogfood
+ * perf review 2026-05-14 (Issue I3).
+ */
+export function logTiming(msg: string): void {
+  if (process.env.SVERKLO_TIMING === "1") {
+    process.stderr.write(`[timing] ${msg}\n`);
+  }
+}
+
 export function logError(msg: string, err?: unknown): void {
   process.stderr.write(`[sverklo:error] ${msg}\n`);
   if (err instanceof Error) {

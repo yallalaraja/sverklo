@@ -46,6 +46,30 @@ export function splitBlocks(text: string): { preamble: string; blocks: string[];
   return { preamble: pre.join("\n"), blocks, trailer };
 }
 
+// ReDoS guardrails (Dogfood security review 2026-05-13, finalized 2026-05-14).
+// Without these, an agent-supplied pattern like `(a+)+$` hangs the
+// indexer thread because Node's V8 regex has no built-in timeout.
+// Reachable from sverklo_grep_results args — a poisoned prompt or
+// adversarial agent test can wedge the server.
+const MAX_PATTERN_LENGTH = 256;
+
+/**
+ * Static-shape check for catastrophic-backtracking patterns. Catches
+ * the obvious ReDoS shapes without pulling in `safe-regex2`. False
+ * positives are acceptable here because the fallback is a literal
+ * substring search — the user still gets results, just not regex.
+ */
+function looksDangerous(pattern: string): boolean {
+  // Nested unbounded quantifiers: (a+)+, (a*)*, (a+)*, (.*)+ etc.
+  // The classic ReDoS shape. Match `quantified-group quantifier` where
+  // both parts use unbounded modifiers.
+  if (/\([^)]*[*+][^)]*\)[*+]/.test(pattern)) return true;
+  // Alternation followed by unbounded quantifier with overlap potential:
+  // (a|aa)+, (.|.)+. Heuristic — looks for `|` inside parens then `*` or `+`.
+  if (/\([^)]*\|[^)]*\)[*+]/.test(pattern)) return true;
+  return false;
+}
+
 /**
  * Keep only blocks whose body matches the given regex. Returns the rebuilt
  * text plus a one-line "filtered N→K" footer.
@@ -53,6 +77,22 @@ export function splitBlocks(text: string): { preamble: string; blocks: string[];
 export function grepResults(text: string, pattern: string): { text: string; kept: number; total: number } {
   const { preamble, blocks, trailer } = splitBlocks(text);
   if (blocks.length === 0) return { text, kept: 0, total: 0 };
+
+  // Input-length cap. A 500-char regex is either a probe or an
+  // accident; either way, refuse early.
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    return {
+      text: `${preamble}\n\n_pattern rejected: regex longer than ${MAX_PATTERN_LENGTH} chars._`.trim(),
+      kept: 0,
+      total: blocks.length,
+    };
+  }
+
+  // Static-shape check for ReDoS. Fall through to literal substring
+  // search on rejection so the call still returns something useful.
+  if (looksDangerous(pattern)) {
+    return grepLiteral(text, pattern);
+  }
 
   let re: RegExp;
   try {

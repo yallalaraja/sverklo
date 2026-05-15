@@ -46,6 +46,38 @@ export function formatOverview(
 
   // depth >= 2: walk directories, listing files and (at depth >= 3) symbols.
   const symbolCap = depth >= 4 ? 999 : 8;
+  // If every file ends up clamped to PageRank 1.00 (the normalization
+  // ceiling), the display strips all signal — `audit.ts [1.00]` looks
+  // identical to `_validation.ts [1.00]`. Pre-compute whether the
+  // entries span any meaningful range; if not, show relative rank
+  // (`1/44`) instead of the floored PageRank. Dogfood review
+  // 2026-05-14 (Issue I — overview PageRank floor).
+  let pagerankRange = 0;
+  let totalEntries = 0;
+  for (const [, dirEntries] of sortedDirs) {
+    for (const e of dirEntries) {
+      totalEntries++;
+      pagerankRange = Math.max(pagerankRange, e.file.pagerank);
+    }
+  }
+  const minPagerank = (() => {
+    let m = Infinity;
+    for (const [, dirEntries] of sortedDirs) {
+      for (const e of dirEntries) m = Math.min(m, e.file.pagerank);
+    }
+    return m === Infinity ? 0 : m;
+  })();
+  // Range is meaningfully small if max-min < 0.05 — everything is
+  // bunched at the normalization ceiling.
+  const useRelativeRank = pagerankRange - minPagerank < 0.05 && totalEntries > 5;
+  let relativeIdx = 0;
+  const formatScore = (pr: number): string => {
+    if (useRelativeRank) {
+      relativeIdx++;
+      return `#${relativeIdx}/${totalEntries}`;
+    }
+    return pr.toFixed(2);
+  };
   for (const [dir, dirEntries] of sortedDirs) {
     const dirLine = `${dir}/`;
     const dirCost = 5;
@@ -58,17 +90,18 @@ export function formatOverview(
 
     for (const entry of dirEntries) {
       const fileName = entry.file.path.split("/").pop() || entry.file.path;
+      const score = formatScore(entry.file.pagerank);
       let line: string;
       if (depth === 2) {
         // Files only — no symbols, much cheaper.
-        line = `  ${fileName} [${entry.file.pagerank.toFixed(2)}]`;
+        line = `  ${fileName} [${score}]`;
       } else {
         const symbols = entry.chunks
           .filter((c) => c.name)
           .map((c) => `${c.name}()`)
           .slice(0, symbolCap)
           .join(", ");
-        line = `  ${fileName} [${entry.file.pagerank.toFixed(2)}] — ${symbols || "(no named exports)"}`;
+        line = `  ${fileName} [${score}] — ${symbols || "(no named exports)"}`;
       }
       const lineCost = Math.ceil(line.length / 3.5);
       if (remaining < lineCost) break;

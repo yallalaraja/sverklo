@@ -33,7 +33,7 @@ import { buildDocLinks } from "./doc-linker.js";
 import { extractReferences } from "./symbol-extractor.js";
 import { createIgnoreFilter } from "../utils/ignore.js";
 import { estimateTokens } from "../utils/tokens.js";
-import { log, logError } from "../utils/logger.js";
+import { log, logError, logTiming } from "../utils/logger.js";
 import { loadSverkloConfig, type SverkloConfig } from "../utils/config-file.js";
 import { track } from "../telemetry/index.js";
 import type { ProjectConfig, ImportRef, IndexStatus } from "../types/index.js";
@@ -311,6 +311,21 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
     try {
       log(`Indexing ${this.config.rootPath}...`);
       const startTime = Date.now();
+      // Phase-timing instrumentation, gated on SVERKLO_TIMING=1.
+      // Without this, the only feedback from `sverklo reindex` is one
+      // wall-clock number; you can't tell whether 17s on a small repo
+      // is dominated by model load, parsing, embedding, or graph build.
+      // Dogfood perf review 2026-05-14 (Issue I3).
+      const timingEnabled = process.env.SVERKLO_TIMING === "1";
+      const phaseTimes: Record<string, number> = {};
+      const phaseStart = (): number => Date.now();
+      const phaseEnd = (label: string, t0: number): void => {
+        if (timingEnabled) {
+          phaseTimes[label] = Date.now() - t0;
+          logTiming(`${label}: ${phaseTimes[label]}ms`);
+        }
+      };
+      const tProviderInit = phaseStart();
 
       // Select the embedding provider lazily on first index. This
       // reads SVERKLO_EMBEDDING_PROVIDER + related env vars and falls
@@ -319,12 +334,15 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       if (!this.embeddingProvider) {
         this.embeddingProvider = await createEmbeddingProvider();
       }
+      phaseEnd("provider_init", tProviderInit);
 
       // 1. Discover files
+      const tDiscover = phaseStart();
       const ignoreFilter = createIgnoreFilter(this.config.rootPath);
       const files = discoverFiles(this.config.rootPath, ignoreFilter);
       this.progress = { done: 0, total: files.length };
       log(`Discovered ${files.length} files`);
+      phaseEnd("discover", tDiscover);
 
       // 2. Determine which files need (re)indexing
       // Use mtime for fast change detection (avoid reading file content twice)
@@ -355,6 +373,7 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       log(`Indexing ${toIndex.length} files (${files.length - toIndex.length} cached)`);
 
       // 4. Parse, chunk, describe, embed
+      const tParseInsert = phaseStart();
       const fileImports = new Map<string, ImportRef[]>();
       const BATCH_SIZE = 32;
       const embeddingBatch: { chunkId: number; text: string }[] = [];
@@ -428,8 +447,10 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       });
 
       transaction();
+      phaseEnd("parse_chunk_insert", tParseInsert);
 
       // 5. Generate embeddings in batches
+      const tEmbed = phaseStart();
       log(`Generating embeddings for ${embeddingBatch.length} chunks...`);
       for (let i = 0; i < embeddingBatch.length; i += BATCH_SIZE) {
         const batch = embeddingBatch.slice(i, i + BATCH_SIZE);
@@ -440,6 +461,7 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
           this.embeddingStore.insert(batch[j].chunkId, vectors[j]);
         }
       }
+      phaseEnd("embed", tEmbed);
 
       // 6. FTS sync is maintained by chunks_ai/chunks_ad/chunks_au
       // triggers on every chunk INSERT/UPDATE/DELETE (see database.ts:127-142).
@@ -452,14 +474,16 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       // rebuild statement explicitly from that migration — not here.
 
       // 7. Build dependency graph and compute PageRank
+      const tGraph = phaseStart();
       log("Building dependency graph...");
       buildGraph(fileImports, this.fileStore, this.graphStore, this.config.rootPath);
+      phaseEnd("graph_pagerank", tGraph);
 
       // 7b. Link doc chunks → symbols (v0.13, P0-5). Requires graph build
       // first so we walk top-PageRank files for the "known symbols" gate.
+      const tDocLink = phaseStart();
       try {
         const allFiles = this.fileStore.getAll(); // sorted by pagerank DESC
-        const fileCache = new Map(allFiles.map((f) => [f.id, f] as const));
         const docChunks: import("../types/index.js").CodeChunk[] = [];
         for (const f of allFiles) {
           if (f.language !== "markdown") continue;
@@ -477,6 +501,7 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
       } catch (err) {
         logError("doc-linking failed (non-fatal)", err);
       }
+      phaseEnd("doc_link", tDocLink);
 
       // 8. Update project metadata
       this.lastIndexedTime = Date.now();
@@ -490,6 +515,12 @@ export class Indexer implements IndexFiles, IndexCode, IndexGraph, IndexMemory, 
         `Indexing complete: ${this.fileStore.count()} files, ` +
           `${this.chunkStore.count()} chunks in ${elapsed}ms`
       );
+      if (timingEnabled) {
+        const summary = Object.entries(phaseTimes)
+          .map(([k, v]) => `${k}=${v}ms`)
+          .join(" · ");
+        logTiming(`summary: ${summary} · total=${elapsed}ms`);
+      }
 
       // Telemetry: cold-start measures time-to-first-search for new projects;
       // refresh measures incremental work cost. No file/chunk counts (those

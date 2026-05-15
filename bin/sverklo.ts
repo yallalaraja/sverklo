@@ -175,6 +175,13 @@ if (command === "reindex" || command === "re-index") {
   const flags = args.filter((a) => a.startsWith("--"));
   const projectPath = resolve(positional[1] || process.cwd());
   const force = flags.includes("--force") || flags.includes("-f");
+  // --timing prints per-phase elapsed ms (provider_init, discover,
+  // parse_chunk_insert, embed, graph_pagerank, doc_link). Useful for
+  // debugging "why is reindex slow" — without it the user sees one
+  // wall-clock number with no breakdown. Dogfood perf review 2026-05-14.
+  if (flags.includes("--timing")) {
+    process.env.SVERKLO_TIMING = "1";
+  }
 
   const { getProjectConfig } = await import("../src/utils/config.js");
   const { Indexer } = await import("../src/indexer/indexer.js");
@@ -2442,6 +2449,7 @@ Usage:
   sverklo doctor             Diagnose MCP setup issues
   sverklo reindex [path]     Incremental rebuild of the index (changed files only)
                              Use --force to clear and rebuild from scratch.
+                             Use --timing to see per-phase elapsed ms.
   sverklo [project-path]     Start the MCP server (stdio transport, single project)
   sverklo                    Start in global mode (serves all registered repos)
   sverklo register [path]    Add a directory to the global registry

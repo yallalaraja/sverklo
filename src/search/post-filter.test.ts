@@ -87,3 +87,49 @@ describe("ctxPeek", () => {
     expect(text).toContain("No block at index 99");
   });
 });
+
+// ReDoS regression tests. Dogfood security review 2026-05-14 flagged
+// `grepResults` as a hang surface: an agent-supplied pattern like
+// `(a+)+$` against a 50-char string took >8s and had to be SIGKILL'd.
+// Reachable from sverklo_grep_results — a poisoned prompt or
+// adversarial agent could wedge the indexer thread. We pre-validate
+// for ReDoS-shaped patterns and refuse oversize inputs.
+describe("grepResults ReDoS guardrails", () => {
+  const sampleText = sample;
+
+  it("refuses oversize patterns (>256 chars)", () => {
+    const huge = "a".repeat(300);
+    const result = grepResults(sampleText, huge);
+    expect(result.kept).toBe(0);
+    expect(result.text).toMatch(/regex longer than 256/);
+  });
+
+  it("rejects nested unbounded quantifier (a+)+ within 1s", () => {
+    const start = Date.now();
+    grepResults(sampleText, "(a+)+$");
+    const elapsed = Date.now() - start;
+    // Before the guardrail this took >5s. With the guardrail it falls
+    // through to literal substring search, which is instant.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("rejects nested unbounded quantifier (a*)*", () => {
+    const start = Date.now();
+    grepResults(sampleText, "(a*)*b");
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("rejects alternation-with-overlap quantifier (a|aa)+", () => {
+    const start = Date.now();
+    grepResults(sampleText, "(a|aa)+b");
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("still accepts safe patterns", () => {
+    const result = grepResults(sampleText, "authenticate");
+    expect(result.total).toBeGreaterThan(0);
+    expect(result.kept).toBeGreaterThan(0);
+  });
+});
