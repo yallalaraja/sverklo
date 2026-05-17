@@ -1,6 +1,12 @@
 # Refactor Plan: Reduce `Indexer` Fan-In Below F Grade
 
-**Status**: in-progress (POC committed; phase 1+ pending)
+**Status**: ✅ shipped 2026-05-10 in v0.20.13 (Phases 1-2 complete; Phase 3 deferred — concrete Indexer barrel kept for tests + lifecycle owners)
+
+**Outcome**:
+- Concrete `Indexer` fan-in: 60 → 15 (F → B)
+- Coupling dimension grade: F → C (max fan-in 28 on index-files.ts)
+- Overall audit grade: C → A
+- 460 tests green; no behavior change
 **Owner**: Nikita Groshin
 **Created**: 2026-05-09
 **Target metric**: `couplingGrade(maxFanIn) ≤ D` (≤ 50), stretch target `B` (≤ 20)
