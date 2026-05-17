@@ -16,7 +16,7 @@
     "models.lock.json"
   ],
   "scripts": {
-    "build": "tsc && mkdir -p dist/src/server/assets && cp src/server/assets/* dist/src/server/assets/ && chmod +x dist/bin/sverklo.js",
+    "build": "tsc && node scripts/post-build.mjs",
     "dev": "tsc --watch",
     "start": "node dist/bin/sverklo.js",
     "test": "vitest run",
@@ -84,7 +84,7 @@
   "author": "Sverklo (https://sverklo.com)",
   "license": "MIT",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

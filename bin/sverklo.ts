@@ -2,6 +2,24 @@
 
 import { resolve, basename } from "node:path";
 
+// sverklo requires Node 24+. Node 22 LTS has node:sqlite behind the
+// --experimental-sqlite flag and ships SQLite without FTS5 (which we
+// use for code search). Node 24 unflagged node:sqlite and includes
+// FTS5 in the bundled SQLite. npm enforces `engines.node` at install
+// time too, but this guard gives a clearer message at runtime in case
+// the package was installed without engine-strict.
+{
+  const major = Number(process.versions.node.split(".")[0]);
+  if (major < 24) {
+    console.error(
+      `sverklo requires Node 24 or newer (you're on ${process.versions.node}).\n` +
+        `node:sqlite is flagged on Node 22 LTS and ships without FTS5.\n` +
+        `Run: nvm install 24 && nvm use 24`,
+    );
+    process.exit(1);
+  }
+}
+
 const args = process.argv.slice(2);
 const command = args[0];
 
