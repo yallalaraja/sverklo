@@ -647,3 +647,7 @@ If sverklo saved your AI from inventing function names that don't exist in your 
 ## License
 
 MIT
+
+---
+
+<a href="https://limn.sh?ref=sverklo" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/comments-Powered_by_Limn-E8A045?style=flat&labelColor=131720" alt="Powered by Limn" /></a>
