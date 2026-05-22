@@ -345,7 +345,8 @@ async function renderFiles() {
   document.getElementById('files-stats').textContent = state.files.length + ' files';
   const html = state.files.map(f => {
     const barWidth = Math.max(1, Math.round((f.pagerank || 0) * 60));
-    return '<div class="file-row" onclick="inspectFile(\\'' + f.path.replace(/'/g, "\\\\'") + '\\')"><div class="path">' + esc(f.path) + '</div><div class="lang">' + (f.language || '') + '</div><div class="pr"><span class="pr-bar" style="width:' + barWidth + 'px"></span>' + (f.pagerank || 0).toFixed(2) + '</div><div class="chunks">' + (f.chunks?.length || 0) + '</div></div>';
+    const safePath = f.path.replace(/'/g, "\\'");
+    return '<div class="file-row" onclick="inspectFile(\'' + safePath + '\')"><div class="path">' + esc(f.path) + '</div><div class="lang">' + (f.language || '') + '</div><div class="pr"><span class="pr-bar" style="width:' + barWidth + 'px"></span>' + (f.pagerank || 0).toFixed(2) + '</div><div class="chunks">' + (f.chunks?.length || 0) + '</div></div>';
   }).join('');
   document.getElementById('files-list').innerHTML = html;
 }
@@ -405,7 +406,7 @@ async function renderMemories() {
 
   if (total === 0) {
     document.getElementById('memories-list').innerHTML =
-      '<div style="padding: 32px; font-family: \\'JetBrains Mono\\', monospace; font-size: 13px; color: var(--text-2); line-height: 1.8;">' +
+      '<div style="padding: 32px; font-family: \'JetBrains Mono\', monospace; font-size: 13px; color: var(--text-2); line-height: 1.8;">' +
       '<div class="inspector-title" style="margin-bottom: 16px;">no memories yet</div>' +
       '<div style="margin-bottom: 24px;">Ask your AI agent to remember something:</div>' +
       '<div style="padding: 16px; background: var(--bg-2); border: 1px solid var(--rule); color: var(--text);">' +
@@ -448,7 +449,7 @@ async function renderMemoryTimeline() {
   document.getElementById('mem-stats').textContent = active + ' active · ' + invalidated + ' superseded · ' + total + ' total';
 
   if (total === 0) {
-    document.getElementById('memories-list').innerHTML = '<div style="padding:32px;font-family:\\'JetBrains Mono\\',monospace;font-size:13px;color:var(--text-2);">no memories yet</div>';
+    document.getElementById('memories-list').innerHTML = '<div style="padding:32px;font-family:\'JetBrains Mono\',monospace;font-size:13px;color:var(--text-2);">no memories yet</div>';
     return;
   }
 
@@ -477,10 +478,10 @@ async function renderMemoryTimeline() {
       const invalidClass = m.invalidated ? ' style="opacity:0.45;text-decoration:line-through;"' : '';
       const superseded = m.superseded_by ? '<div style="font-size:10px;color:var(--warn);margin-top:2px;">→ superseded by #' + m.superseded_by + '</div>' : '';
       const tierBadge = m.tier === 'core' ? '<span style="font-size:10px;padding:1px 6px;background:var(--accent);color:var(--bg);margin-left:6px;">CORE</span>' : '';
-      return '<div' + invalidClass + ' style="margin:8px 0 8px 120px;padding:12px 16px;background:var(--bg-2);border-left:2px solid var(--accent);"><div style="font-family:\\'JetBrains Mono\\',monospace;font-size:11px;color:var(--accent);margin-bottom:4px;">[' + m.category + '] #' + m.id + tierBadge + '</div><div style="font-size:13px;color:var(--text);">' + esc(m.content) + '</div>' + superseded + '<div style="font-size:11px;color:var(--text-3);margin-top:6px;">' + tags + ' · conf ' + m.confidence + ' · used ' + m.access_count + 'x</div></div>';
+      return '<div' + invalidClass + ' style="margin:8px 0 8px 120px;padding:12px 16px;background:var(--bg-2);border-left:2px solid var(--accent);"><div style="font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--accent);margin-bottom:4px;">[' + m.category + '] #' + m.id + tierBadge + '</div><div style="font-size:13px;color:var(--text);">' + esc(m.content) + '</div>' + superseded + '<div style="font-size:11px;color:var(--text-3);margin-top:6px;">' + tags + ' · conf ' + m.confidence + ' · used ' + m.access_count + 'x</div></div>';
     }).join('');
 
-    return '<div style="position:relative;border-bottom:1px solid var(--rule);padding:20px 32px;"><div style="position:absolute;left:32px;top:20px;width:80px;font-family:\\'JetBrains Mono\\',monospace;font-size:11px;color:var(--ok);">' + esc(shaLabel) + '<div style="color:var(--text-3);margin-top:2px;">' + whenLabel + ' ago</div></div>' + memsHtml + '</div>';
+    return '<div style="position:relative;border-bottom:1px solid var(--rule);padding:20px 32px;"><div style="position:absolute;left:32px;top:20px;width:80px;font-family:\'JetBrains Mono\',monospace;font-size:11px;color:var(--ok);">' + esc(shaLabel) + '<div style="color:var(--text-3);margin-top:2px;">' + whenLabel + ' ago</div></div>' + memsHtml + '</div>';
   }).join('');
 
   document.getElementById('memories-list').innerHTML = html;
