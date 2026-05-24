@@ -4,7 +4,9 @@ import type { Task, ExpectedAnswer, Location } from "../../types.ts";
 export class BifrostBaseline implements Baseline {
   name = "bifrost";
 
-  private baseUrl = "http://127.0.0.1:8080";
+  // Configurable so users (and CI) can point at a non-loopback gateway.
+  // Default keeps the original loopback target.
+  private baseUrl = process.env.SVERKLO_BIFROST_BASE_URL || "http://127.0.0.1:8080";
 
   private cachedModel: string | null = null;
   private firstTaskInDataset = true;
@@ -14,8 +16,14 @@ export class BifrostBaseline implements Baseline {
     this.firstTaskInDataset = true;
     this.indexCostMs = 0;
 
-    // 🔥 preload model once for fairness
-    this.cachedModel = await this.getFirstAvailableModel();
+    // Probe once. If the gateway is unreachable here, leave cachedModel
+    // null and run() will short-circuit each task — much better than
+    // burning a 30s timeout per task on a 100-task dataset.
+    try {
+      this.cachedModel = await this.getFirstAvailableModel();
+    } catch {
+      this.cachedModel = null;
+    }
   }
 
   async teardownForDataset() {}
@@ -23,10 +31,21 @@ export class BifrostBaseline implements Baseline {
   async run(task: Task): Promise<BaselineOutput> {
     const start = Date.now();
 
-    try {
-      const model = this.cachedModel ?? await this.getFirstAvailableModel();
+    // Gateway unreachable at setup — return empty predictions immediately.
+    // Bench numbers will reflect "no Bifrost run" rather than 30s timeouts.
+    if (!this.cachedModel) {
+      return {
+        prediction: this.emptyPrediction(task.category),
+        rawPayload: "bifrost gateway unreachable at setup",
+        toolCalls: 0,
+        wallTimeMs: 0,
+        coldStartMs: 0,
+        warmCallMs: 0,
+      };
+    }
 
-      const res = await this.callLLM(this.buildPrompt(task), model);
+    try {
+      const res = await this.callLLM(this.buildPrompt(task), this.cachedModel);
       const prediction = this.parsePrediction(task.category, res);
 
       return {
@@ -52,27 +71,27 @@ export class BifrostBaseline implements Baseline {
   }
 
   // -----------------------------
-  // MODEL DISCOVERY (CRITICAL FIX)
+  // MODEL DISCOVERY
   // -----------------------------
+  // Throws on network failure / empty model list. Caller decides whether
+  // that's fatal (e.g., setupForDataset catches and switches to skip mode).
   private async getFirstAvailableModel(): Promise<string> {
-    try {
-      const res = await fetch(`${this.baseUrl}/v1/models`);
-      const json = await res.json();
-
-      const models =
-        json?.data?.map((m: any) => m.id) ??
-        json?.models ??
-        [];
-
-      if (!models.length) {
-        throw new Error("No models available in Bifrost");
-      }
-
-      return models[0];
-    } catch (e) {
-      // fallback (safe default)
-      return "phi3:mini";
+    const res = await fetch(`${this.baseUrl}/v1/models`);
+    if (!res.ok) {
+      throw new Error(`Bifrost /v1/models returned ${res.status} ${res.statusText}`);
     }
+    const json = await res.json();
+
+    const models =
+      json?.data?.map((m: any) => m.id) ??
+      json?.models ??
+      [];
+
+    if (!models.length) {
+      throw new Error("No models available in Bifrost");
+    }
+
+    return models[0];
   }
 
   // -----------------------------
