@@ -6,6 +6,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ---
 
+## [0.25.2] — 2026-05-24
+
+### Fixed
+
+- **#66 — Ollama provider stored 384d vectors despite `dimensions: 1024` config (real-user repro: Viraj).** v0.25.0 wired `.sverklo.yaml` `embeddings.provider` into the factory so the Ollama provider was actually *selected*, but `OllamaProvider.embed()` blindly wrapped whatever Ollama returned into a `Float32Array` and pushed it into the indexer. When the configured model's true output dim disagreed with `embeddings.dimensions` (Viraj configured 1024 against a model that returned 384), the embed phase completed "successfully" — provider kept reporting 1024 dims, indexer wrote 384-dim vectors to SQLite, and `sverklo doctor` flagged the mismatch only after 6370 chunks of bad data were on disk. Fix in `src/indexer/embedding-providers.ts`: on every batch, compare the response vector length against the configured dim. If a user passed `embeddings.dimensions: N` and Ollama returns M ≠ N, throw fail-loud with the actual N and a fix-it hint pointing at the YAML field. The auto-detect path (no user-supplied dim) is unchanged. Regression test mocks Ollama returning 384d while YAML asks for 1024 and asserts `indexer.index()` rejects — fails on v0.25.1 source (verified by stashing the fix and re-running), passes with the fix.
+- **#66 (related) — `fingerprintOf` is defined but never called outside its own test.** The module header (line 22-23 of `embedding-providers.ts`) documents an "index startup checks stored provider against current config and triggers a rebuild" guarantee, but the code that would do that comparison and trigger the rebuild was never written. Tracking issue to be opened for v0.26.0; out of scope for this patch.
+
+---
+
+## [0.25.0] — 2026-05-22
+
+### Fixed
+
+- **#53 — Windows MCP probe still failed on nvm-windows / nvm4w after v0.22.2.** npm's cmd-shim emits three sibling shims into the install prefix (`sverklo` sh-style, `sverklo.cmd`, `sverklo.ps1`) and `findOnPath` returned the extension-less one because empty-string came first in its PATHEXT-equivalent list. Windows cannot execute that shim (no PATHEXT match, shebangs ignored), so `spawnSync` produced empty stdout and all three probe checks (handshake / tools/list / tools/call) reported "no … response". Fix in `src/utils/find-on-path.ts`: on Windows, prefer `.cmd` / `.exe` / `.bat` / `.ps1` over the extension-less candidate. Defense in depth in `src/doctor.ts`: treat any Windows-resolved sverklo path as needing `shell: true`, so cmd.exe applies PATHEXT even if a future PATH layout slips through. CI Windows regression check now asserts `MCP handshake` succeeds in addition to the issue #43 string checks.
+- **#59 embedding dimension reporting + (fixed): `.sverklo.yaml` `embeddings.provider` was a silent no-op.** `Indexer.index()` called `createEmbeddingProvider()` with no arguments, so the YAML config never reached the factory — users configuring `provider: ollama` with a 1024-dim model got the bundled 384-dim MiniLM stored in the index and no visible signal of the mismatch. Now the indexer passes `this.sverkloConfig`, the silent-fallback path tags its log line `WARN` and includes the configured dimensions, and `embeddings.onnx.modelPath` (a documented field that no provider actually consumes) logs a loud "not yet supported" warning instead of silently degrading. Locked in by `indexer-provider-integration.test.ts` and `storage/embedding-store.test.ts`.
+- **#59 (diagnostic)** — `sverklo doctor` now reports the configured embedding provider + dimensions alongside what's actually stored in the index (e.g. `provider=ollama:qwen3-embedding:0.6b (configured 1024d) but stored vectors are 384d × 3200. 3200 / 6550 chunks embedded.`). Reads the embeddings table directly via `length(vector)/4` so config drift, silent fallbacks, AND incomplete coverage (issue #60) all surface as a single check. Fails when dims disagree; warns on coverage gaps.
+- **#58 — `sverklo reindex --force` no longer claims `✓ Done` after silent EBUSY.** On Windows when an MCP server still held `index.db` / `-wal` / `-shm` open, every `unlinkSync` failed but the old code logged the errors via `logError`, opened the same stale files, ran an empty index pass, and printed success. Users thought they were testing a fresh index when nothing had been deleted. `Indexer.clearIndex()` now returns `{ deleted, failed }`; the CLI checks `failed.length` and exits non-zero with a Windows-specific "close the MCP client, wait for the OS to release the handle" hint when `EBUSY` / `EPERM` is in play. The same handling applies to `sverklo bench self` (cold-start can't trust the timing if the clear silently failed). The MCP `clear_index` tool now reports "NOT fully deleted" honestly when files are locked.
+- **#61 — `sverklo_search` evidence rows are no longer labeled `method: "fts"`** when the hybrid pipeline runs both BM25 and vector lanes. Renamed to `method: "hybrid"` (new variant in `RetrievalMethod`). More usefully: every search response now appends a `retrieval lanes: BM25=N · vector=M (scanned X of Y candidate chunks) · overlap=K` footer so users can see whether the vector lane actually contributed. When `vectorHits === 0` despite candidates being scanned, the response surfaces a "check provider/dimension config with sverklo doctor" hint — paired with the #59 doctor diagnostic.
+
+### Added
+
+- **#60 — embedding coverage is now first-class in `IndexStatus`.** The MCP `sverklo_status` tool and the HTTP `/api/status` endpoint (dashboard) both surface `embeddings: { chunksEmbedded, coveragePct, dimensionsObserved, dimensionsConfigured, provider }`. New `EmbeddingStore.dimensionsObserved()` reads `length(vector)/4` from any one row in `O(1)`. Pairs with the `sverklo doctor` diagnostic that ships in the same release.
+
+---
+
+## [0.23.1] — 2026-05-21
+
+### Fixed
+
+- **#54** — `Indexing complete: N files, M chunks in Xms` now prints unconditionally on every flow that triggers indexing (`sverklo audit`, `sverklo index`, `sverklo reindex`). Previously gated on `SVERKLO_DEBUG=1` so default users never saw a total elapsed time. New `logSummary()` in `src/utils/logger.ts`.
+- **#55** — Ollama embedding requests now include `keep_alive: "10m"` + `connection: keep-alive` HTTP hints. Keeps the model resident between batches; closes a class of cold-load tax. Structural gap remains — ONNX is in-process, Ollama is over HTTP — so pick ONNX unless you specifically need Ollama's model selection. Documented at [sverklo.com/docs/config/](https://sverklo.com/docs/config/) with a comparison table.
+
+### Added
+
+- **#56 (partial)** — `sverklo weights explain <path>` subcommand. Walks `.sverklo.yaml` weight rules and shows which globs matched, in declaration order, with the winner marked. Closes the "no tooling to explain effective weights" gap. Remaining `#56` requests (git-worktree inherit, stale-project cleanup) deferred to a separate feature spec — both are filesystem-heavy and warrant their own spec-kit cycle.
+
+---
+
 ## [0.23.0] — 2026-05-20
 
 ### Added

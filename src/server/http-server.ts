@@ -51,8 +51,10 @@ export function startHttpServer(indexer: Indexer, port: number = 3847): void {
       // ─── API routes ───
       if (url.pathname === "/api/status") {
         const status = indexer.getStatus();
-        // Include the running package version so the dashboard footer
-        // can show what's actually running instead of a hardcoded string.
+        // v0.25 cleanup: branch is now part of IndexStatus (Indexer.getStatus
+        // computes it via getGitState) so the dashboard, MCP sverklo_status,
+        // and this HTTP endpoint all see the same shape. We only enrich
+        // with the package version here.
         json(res, { ...status, version: PACKAGE_VERSION });
       } else if (url.pathname === "/api/stats") {
         // Aggregated stats for the dashboard overview

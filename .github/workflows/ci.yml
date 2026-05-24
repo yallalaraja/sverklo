@@ -30,6 +30,11 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+      # 2026-05-22: the Tier-2.3 dashboard split shipped a SyntaxError
+      # in dashboard.js that hid for 8 days because TS build + vitest
+      # never load the browser assets. Pipe every shipped .js asset
+      # through `node --check` so a parse error fails CI immediately.
+      - run: npm run lint:assets
       - run: npm test
 
   install-smoke:
@@ -105,6 +110,16 @@ jobs:
           }
           if ($out -match "is not recognized as an internal") {
             Write-Host "::error::issue #43 regression: shell error leaked from doctor"
+            exit 1
+          }
+          # Issue #53: on nvm-windows the npm prefix contains both the
+          # extension-less sh-shim AND `sverklo.cmd`. If findOnPath picks
+          # the wrong one, the MCP probe spawns a binary Windows can't
+          # execute and all three probe responses are empty. Assert the
+          # handshake probe explicitly so any future PATH-priority
+          # regression breaks CI instead of users.
+          if ($out -match "no initialize response") {
+            Write-Host "::error::issue #53 regression: MCP probe got no initialize response on Windows"
             exit 1
           }
 

@@ -77,6 +77,7 @@ if (command && command !== "--help" && command !== "-h") {
       receipt: "Token-spend receipt for your recent Claude Code sessions. Shows where tokens went and projected yearly cost. Flags: --since 7d, --format plain|json.",
       memory: "Manage the memory store. Subcommands: show, edit, export.",
       grammars: "Manage tree-sitter grammars for the SVERKLO_PARSER=tree-sitter opt-in path. Subcommands: install.",
+      weights: "Inspect .sverklo.yaml weight rules. Subcommands: explain <path> — show which glob matched and the effective weight.",
       "audit-prompt": "Print a ready-to-paste codebase-audit prompt (hybrid agent workflow).",
       "review-prompt": "Print a ready-to-paste PR/MR-review prompt (hybrid agent workflow).",
       bench: "Run reproducible benchmarks on gin/nestjs/react.",
@@ -210,7 +211,37 @@ if (command === "reindex" || command === "re-index") {
 
   if (force) {
     console.log(`Clearing index at ${projectPath}…`);
-    indexer.clearIndex();
+    const clearResult = indexer.clearIndex();
+    // Issue #58 (2026-05-22): on Windows, when an MCP server still
+    // holds index.db / -wal / -shm open, every unlink fails with EBUSY,
+    // but clearIndex used to swallow the errors and reopen the same
+    // stale DB. The CLI then ran "Done" with no actual rebuild — so
+    // users thought they'd tested a fresh index when they hadn't.
+    // Now: refuse to continue when any unlink failed and surface the
+    // most likely cause (running MCP server holding the file lock).
+    if (clearResult.failed.length > 0) {
+      console.error("");
+      console.error(`✗ Refusing to reindex — could not clear ${clearResult.failed.length} file(s) of the existing index:`);
+      for (const { path: p, error } of clearResult.failed) {
+        console.error(`    ${p}`);
+        console.error(`      ${error.code ?? "ERR"}: ${error.message}`);
+      }
+      const isWindowsLock = clearResult.failed.some(
+        (f) => f.error.code === "EBUSY" || f.error.code === "EPERM"
+      );
+      if (isWindowsLock) {
+        console.error("");
+        console.error("Likely cause: a running sverklo MCP server (Claude Code, VSCode,");
+        console.error("Cursor, Antigravity, Codex, etc.) is holding the SQLite WAL open.");
+        console.error("Close the MCP client, wait ~5s for Windows to release the handle,");
+        console.error("and retry. If the lock persists, restart the host process or sign");
+        console.error("out + back in to flush all file handles.");
+      }
+      console.error("");
+      console.error("Index files were NOT cleared. No rebuild was performed.");
+      indexer.close();
+      process.exit(1);
+    }
     console.log("Reindexing from scratch…");
   } else {
     console.log(`Reindexing ${projectPath} (incremental — only changed files)…`);
@@ -296,7 +327,19 @@ if (command === "bench" || command === "benchmark") {
 
     // Cold-start: clear + rebuild
     console.log("[1/2] cold-start (clear index, rebuild from scratch)…");
-    indexer.clearIndex();
+    const benchClear = indexer.clearIndex();
+    // Bench self has to start from an empty index or the cold-start
+    // number is a lie. Issue #58 fail-loud propagates here too.
+    if (benchClear.failed.length > 0) {
+      console.error("");
+      console.error(`✗ bench self cannot run: could not clear ${benchClear.failed.length} index file(s).`);
+      for (const { path: p, error } of benchClear.failed) {
+        console.error(`    ${p}: ${error.code ?? "ERR"} ${error.message}`);
+      }
+      console.error("Close any running sverklo MCP client and retry.");
+      indexer.close();
+      process.exit(1);
+    }
     const t0 = Date.now();
     await indexer.index();
     const coldMs = Date.now() - t0;
@@ -2076,6 +2119,55 @@ if (command === "grammars") {
     console.log(`\nNext: SVERKLO_PARSER=tree-sitter sverklo audit . to use them.\n`);
   }
   process.exit(errors.length > 0 ? 1 : 0);
+}
+
+if (command === "weights") {
+  // Inspect .sverklo.yaml weight rules. Closes part of issue #56.
+  //   sverklo weights explain <path> [project-path]
+  const sub = args[1];
+  if (sub !== "explain") {
+    console.error(
+      "Usage: sverklo weights explain <path> [project-path]\n" +
+        "  <path> is a repo-relative file path to test against the weight rules.",
+    );
+    process.exit(2);
+  }
+  const targetPath = args[2];
+  if (!targetPath) {
+    console.error("sverklo weights explain: missing <path> argument.");
+    process.exit(2);
+  }
+  const projectPath = await resolveProjectPath(args.slice(3));
+  const { loadSverkloConfig, explainWeight } = await import("../src/utils/config-file.js");
+  const { join: joinPath } = await import("node:path");
+  const { existsSync: fsExists } = await import("node:fs");
+
+  const configCandidates = [
+    joinPath(projectPath, ".sverklo.yaml"),
+    joinPath(projectPath, ".sverklo.yml"),
+  ];
+  const configPath = configCandidates.find((p) => fsExists(p)) ?? null;
+  const config = loadSverkloConfig(projectPath);
+  const explanation = explainWeight(config, targetPath, configPath);
+
+  console.log("");
+  console.log(`Weight resolution for: ${targetPath}`);
+  console.log(`Project: ${projectPath}`);
+  console.log(`Config:  ${explanation.source ?? "(no .sverklo.yaml found — defaults apply)"}`);
+  console.log("");
+  if (explanation.matches.length === 0) {
+    console.log(`  No glob matched. Effective weight: ${explanation.effective.toFixed(2)} (default)`);
+  } else {
+    console.log(`  Matched globs (in declaration order):`);
+    explanation.matches.forEach((m, i) => {
+      const arrow = i === explanation.matches.length - 1 ? "← winner" : "  (overridden)";
+      console.log(`    [${m.index + 1}] ${m.glob}  weight=${m.weight.toFixed(2)}  ${arrow}`);
+    });
+    console.log("");
+    console.log(`  Effective weight: ${explanation.effective.toFixed(2)} (last matching glob wins)`);
+  }
+  console.log("");
+  process.exit(0);
 }
 
 if (command === "memory") {

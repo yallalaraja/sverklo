@@ -222,8 +222,16 @@ class OllamaProvider implements EmbeddingProvider {
       try {
         const probeRes = await fetch(`${this.baseUrl}/api/embed`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: this.model, input: ["dimension probe"] }),
+          headers: {
+            "content-type": "application/json",
+            "connection": "keep-alive",
+          },
+          keepalive: true,
+          body: JSON.stringify({
+            model: this.model,
+            input: ["dimension probe"],
+            keep_alive: "10m",
+          }),
         });
         if (probeRes.ok) {
           const probeJson = (await probeRes.json()) as OllamaEmbedResponse;
@@ -250,10 +258,22 @@ class OllamaProvider implements EmbeddingProvider {
 
     for (let i = 0; i < texts.length; i += BATCH) {
       const batch = texts.slice(i, i + BATCH);
+      // `keep_alive` keeps the model resident on the Ollama server
+      // between batches — otherwise the model can be unloaded after
+      // idle gaps and the next batch pays the cold-load tax again.
+      // Closes part of issue #55.
       const res = await fetch(`${this.baseUrl}/api/embed`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: this.model, input: batch }),
+        headers: {
+          "content-type": "application/json",
+          "connection": "keep-alive",
+        },
+        keepalive: true,
+        body: JSON.stringify({
+          model: this.model,
+          input: batch,
+          keep_alive: "10m",
+        }),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "<no body>");
@@ -263,10 +283,31 @@ class OllamaProvider implements EmbeddingProvider {
       }
       const json = (await res.json()) as OllamaEmbedResponse;
 
-      // Auto-detect dimensions from the first real response.
-      if (!this._dimensionsDetected && json.embeddings?.[0]?.length) {
-        this._dimensions = json.embeddings[0].length;
-        this._dimensionsDetected = true;
+      // Validate response dimensions. Two cases:
+      //   (a) user configured `embeddings.dimensions: N` — Ollama MUST
+      //       return N-dim vectors. If it returns something else, the
+      //       index would end up with vectors that don't match what the
+      //       provider claims via `.dimensions`, doctor would flag a
+      //       mismatch on every run, and similarity scoring would be
+      //       silently wrong. Throw fail-loud so the user fixes the
+      //       model or the config — better than persisting bad data.
+      //       (#66 root cause: pre-v0.25.2 we trusted the config blindly.)
+      //   (b) no user config — auto-detect from the first response, then
+      //       enforce stability for every subsequent batch in this run.
+      const actualLen = json.embeddings?.[0]?.length;
+      if (actualLen) {
+        if (!this._dimensionsDetected) {
+          this._dimensions = actualLen;
+          this._dimensionsDetected = true;
+        } else if (actualLen !== this._dimensions) {
+          throw new Error(
+            `Ollama model '${this.model}' returned ${actualLen}-dim vectors ` +
+              `but the provider was configured for ${this._dimensions}-dim. ` +
+              `Update embeddings.dimensions in .sverklo.yaml to ${actualLen}, ` +
+              `or switch to a model whose output matches the configured dimension. ` +
+              `(sverklo/sverklo#66)`
+          );
+        }
       }
 
       for (const emb of json.embeddings) {
@@ -315,6 +356,18 @@ export async function createEmbeddingProvider(
       case "default":
       case "bundled":
       case "onnx":
+        // #59 (v0.25.0): warn loudly when `embeddings.onnx.modelPath` is
+        // set in .sverklo.yaml. The field is in the documented config
+        // schema but no provider consumes it — users pointing at a custom
+        // 1024-dim model silently got the bundled 384-dim MiniLM. Until
+        // we ship custom-ONNX-path support, surface the no-op explicitly.
+        if (embCfg?.onnx?.modelPath) {
+          log(
+            `[embedding] WARN: .sverklo.yaml has embeddings.onnx.modelPath='${embCfg.onnx.modelPath}' ` +
+              `but custom ONNX model paths are not yet supported. Using the bundled all-MiniLM-L6-v2 (384d). ` +
+              `Track sverklo/sverklo#59. To use a different model today, switch to provider: ollama.`
+          );
+        }
         provider = new BundledOnnxProvider();
         break;
 
@@ -389,8 +442,17 @@ export async function createEmbeddingProvider(
     }
     return provider;
   } catch (err) {
+    // #59 (v0.25.0): silent fallback was the original bug — users saw
+    // "ok, configured ollama" but the index stored 384-dim MiniLM vectors
+    // anyway. Make the fallback unambiguous: include both the requested
+    // provider and the dim it would have produced (when known), and tag
+    // the line WARN so SVERKLO_DEBUG=1 readers can grep for it.
+    const configuredDims = embCfg?.dimensions
+      ? ` (configured dimensions: ${embCfg.dimensions})`
+      : "";
     log(
-      `[embedding] Provider '${providerName}' init failed: ${(err as Error).message}. Falling back to default.`
+      `[embedding] WARN: provider '${providerName}'${configuredDims} init failed: ${(err as Error).message}. ` +
+        `Falling back to bundled all-MiniLM-L6-v2 (384d). Your index will use 384-dim vectors, NOT what you configured.`
     );
     const fallback = new BundledOnnxProvider();
     await fallback.init();
